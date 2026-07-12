@@ -12,7 +12,6 @@ import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
-import 'package:localsend_app/provider/network/send_provider.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/receive_history_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
@@ -27,6 +26,7 @@ import 'package:localsend_app/util/native/open_file.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
 import 'package:localsend_app/util/native/pick_directory_path.dart';
 import 'package:localsend_app/widget/dialogs/qr_dialog.dart';
+import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:localsend_app/widget/file_thumbnail.dart';
 import 'package:path/path.dart' as path;
 import 'package:refena_flutter/refena_flutter.dart';
@@ -940,9 +940,7 @@ class _DeviceRow extends StatelessWidget {
       ).showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
       return;
     }
-    await context.ref
-        .notifier(sendProvider)
-        .startSession(target: target, files: files, background: true);
+    await WindowsSendCard.open(context, suggestedTarget: target);
   }
 }
 
