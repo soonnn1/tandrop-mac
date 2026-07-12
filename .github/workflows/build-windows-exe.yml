@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -33,7 +33,6 @@ jobs:
 
       - name: Analyze
         working-directory: app
-        continue-on-error: true
         run: flutter analyze
 
       - name: Build Windows EXE
@@ -44,7 +43,7 @@ jobs:
         run: flutter build windows --release
 
       - name: Upload Windows build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tandrop-windows-release
           path: app/build/windows/x64/runner/Release/

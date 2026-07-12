@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:localsend_app/gen/strings.g.dart';
@@ -101,8 +103,7 @@ Future<void> updateSystemOverlayStyleWithBrightness(
         RefenaScope.defaultRef.read(deviceInfoProvider).androidSdkInt ?? 0;
     final bool edgeToEdge = androidSdkInt >= 29;
 
-    SystemChrome.setEnabledSystemUIMode(
-        SystemUiMode.edgeToEdge); // ignore: unawaited_futures
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
 
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,

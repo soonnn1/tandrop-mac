@@ -37,6 +37,7 @@ import 'package:localsend_app/provider/selection/selected_sending_files_provider
 import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/provider/tv_provider.dart';
 import 'package:localsend_app/provider/window_dimensions_provider.dart';
+import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/i18n.dart';
 import 'package:localsend_app/util/native/autostart_helper.dart';
 import 'package:localsend_app/util/native/cache_helper.dart';
@@ -46,7 +47,6 @@ import 'package:localsend_app/util/native/cross_file_converters.dart';
 import 'package:localsend_app/util/native/device_info_helper.dart';
 import 'package:localsend_app/util/native/macos_channel.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
-import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
 import 'package:localsend_app/util/rhttp.dart';
 import 'package:localsend_app/util/ui/dynamic_colors.dart';
@@ -200,7 +200,7 @@ String _formatRemainingTime(int seconds) {
   if (seconds < 60) return '剩余 ${seconds}s';
   final minutes = seconds ~/ 60;
   final restSeconds = seconds % 60;
-  return '剩余 ${minutes}分${restSeconds}s';
+  return '剩余 $minutes分${restSeconds}s';
 }
 
 Future<void> _refreshSendPanelDevices(Ref ref) async {

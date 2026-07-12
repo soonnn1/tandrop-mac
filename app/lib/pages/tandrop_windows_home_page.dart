@@ -5,8 +5,8 @@ import 'dart:math' as math;
 import 'package:common/model/device.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
-import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/gen/assets.gen.dart';
+import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/persistence/receive_history_entry.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
@@ -26,8 +26,8 @@ import 'package:localsend_app/util/native/file_picker.dart';
 import 'package:localsend_app/util/native/open_file.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
 import 'package:localsend_app/util/native/pick_directory_path.dart';
-import 'package:localsend_app/widget/file_thumbnail.dart';
 import 'package:localsend_app/widget/dialogs/qr_dialog.dart';
+import 'package:localsend_app/widget/file_thumbnail.dart';
 import 'package:path/path.dart' as path;
 import 'package:refena_flutter/refena_flutter.dart';
 
@@ -758,7 +758,7 @@ class _NearbyDevicesCard extends StatelessWidget {
                 ),
               ),
               TextButton.icon(
-                onPressed: () => _showUploadQr(context),
+                onPressed: () => unawaited(_showUploadQr(context)),
                 icon: const Icon(Icons.qr_code_rounded, size: 16),
                 label: const Text('扫码上传'),
                 style: TextButton.styleFrom(
@@ -783,10 +783,12 @@ class _NearbyDevicesCard extends StatelessWidget {
   }
 
   Future<void> _showUploadQr(BuildContext context) async {
-    var server = context.ref.read(serverProvider);
+    final ref = context.ref;
+    var server = ref.read(serverProvider);
     if (server == null) {
-      await context.ref.notifier(serverProvider).startServerFromSettings();
-      server = context.ref.read(serverProvider);
+      await ref.notifier(serverProvider).startServerFromSettings();
+      if (!context.mounted) return;
+      server = ref.read(serverProvider);
     }
     if (server?.session != null) {
       if (context.mounted) {
@@ -800,26 +802,33 @@ class _NearbyDevicesCard extends StatelessWidget {
     // 手机浏览器直接打开 HTTP，避免自签名 HTTPS 证书阻断扫码页面。
     final restoreHttps = server?.https == true;
     if (restoreHttps) {
-      final settings = context.ref.read(settingsProvider);
-      await context.ref.notifier(serverProvider).restartServer(
+      final settings = ref.read(settingsProvider);
+      await ref.notifier(serverProvider).restartServer(
             alias: settings.alias,
             port: settings.port,
             https: false,
           );
-      server = context.ref.read(serverProvider);
+      if (!context.mounted) return;
+      server = ref.read(serverProvider);
     }
-    final ips = context.ref.read(localIpProvider).localIps;
-    if (!context.mounted || server == null || ips.isEmpty) {
+    final ips = ref.read(localIpProvider).localIps;
+    if (!context.mounted) {
+      if (restoreHttps) {
+        await ref.notifier(serverProvider).restartServerFromSettings();
+      }
+      return;
+    }
+    if (server == null || ips.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('未检测到可用于扫码的局域网地址。')),
       );
       if (restoreHttps) {
-        await context.ref.notifier(serverProvider).restartServerFromSettings();
+        await ref.notifier(serverProvider).restartServerFromSettings();
       }
       return;
     }
 
-    final token = context.ref.notifier(serverProvider).enableWebUpload();
+    final token = ref.notifier(serverProvider).enableWebUpload();
     final url = 'http://${ips.first}:${server.port}/upload?token=$token';
     try {
       await showDialog<void>(
@@ -828,7 +837,7 @@ class _NearbyDevicesCard extends StatelessWidget {
       );
     } finally {
       if (restoreHttps) {
-        await context.ref.notifier(serverProvider).restartServerFromSettings();
+        await ref.notifier(serverProvider).restartServerFromSettings();
       }
     }
   }
