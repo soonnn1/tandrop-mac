@@ -12,10 +12,10 @@ import 'package:localsend_app/model/persistence/receive_history_entry.dart';
 import 'package:localsend_app/model/state/send/send_session_state.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
+import 'package:localsend_app/provider/progress_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
-import 'package:localsend_app/provider/progress_provider.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/receive_history_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
@@ -945,7 +945,11 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
             const Icon(Icons.cancel_rounded, color: Colors.red)
           else
             OutlinedButton(
-              onPressed: widget.enabled ? () => _sendToDevice(widget.device) : null,
+              onPressed: widget.enabled
+                  ? () {
+                      unawaited(_sendToDevice(widget.device));
+                    }
+                  : null,
               style: OutlinedButton.styleFrom(
                 foregroundColor: colors.primary,
                 side: BorderSide(color: colors.primary),
