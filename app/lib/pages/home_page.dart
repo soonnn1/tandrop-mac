@@ -12,8 +12,10 @@ import 'package:localsend_app/pages/tabs/send_tab.dart';
 import 'package:localsend_app/pages/tabs/settings_tab.dart';
 import 'package:localsend_app/pages/tandrop_macos_home_page.dart';
 import 'package:localsend_app/pages/tandrop_windows_home_page.dart';
+import 'package:localsend_app/provider/app_arguments_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/cross_file_converters.dart';
+import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:localsend_app/widget/responsive_builder.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 
@@ -53,12 +55,18 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with Refena {
   bool _dragAndDropIndicator = false;
+  bool _isWindowsFileShare = false;
 
   @override
   void initState() {
     super.initState();
 
     ensureRef((ref) async {
+      _isWindowsFileShare = defaultTargetPlatform == TargetPlatform.windows &&
+          ref.read(appArgumentsProvider).any((arg) => File(arg).existsSync());
+      if (_isWindowsFileShare && mounted) {
+        setState(() {});
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
 
@@ -68,12 +76,19 @@ class _HomePageState extends State<HomePage> with Refena {
       });
 
       await postInit(context, ref, widget.appStart);
+
+      if (_isWindowsFileShare && mounted) {
+        await WindowsSendCard.open(context);
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
     Translations.of(context); // rebuild on locale change
+    if (_isWindowsFileShare) {
+      return const ColoredBox(color: Color(0xFF151413));
+    }
     // 两个桌面端分别持有 UI 页面，底层发送、接收和发现逻辑仍由原有 Provider 处理。
     if (defaultTargetPlatform == TargetPlatform.macOS) {
       return const TanDropMacHomePage();

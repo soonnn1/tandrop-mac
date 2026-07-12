@@ -3,16 +3,19 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:common/model/device.dart';
+import 'package:common/model/session_status.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:localsend_app/gen/assets.gen.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/persistence/receive_history_entry.dart';
+import 'package:localsend_app/model/state/send/send_session_state.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
+import 'package:localsend_app/provider/progress_provider.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/receive_history_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
@@ -712,7 +715,12 @@ class _NearbyDevicesCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          _DeviceRow(device: localDevice, isLocal: true, enabled: false),
+          _DeviceRow(
+            key: ValueKey('local-device-${localDevice.ip}'),
+            device: localDevice,
+            isLocal: true,
+            enabled: false,
+          ),
           const SizedBox(height: 9),
           if (devices.isEmpty)
             _EmptyDevices(
@@ -723,6 +731,7 @@ class _NearbyDevicesCard extends StatelessWidget {
                   (device) => Padding(
                     padding: const EdgeInsets.only(bottom: 9),
                     child: _DeviceRow(
+                      key: ValueKey('nearby-device-${device.ip}'),
                       device: device,
                       isLocal: false,
                       enabled: hasSelectedFiles,
@@ -843,106 +852,210 @@ class _NearbyDevicesCard extends StatelessWidget {
   }
 }
 
-class _DeviceRow extends StatelessWidget {
+enum _DeviceTransferState { idle, sending, completed, failed }
+
+class _DeviceRow extends StatefulWidget {
   final Device device;
   final bool isLocal;
   final bool enabled;
 
   const _DeviceRow({
+    super.key,
     required this.device,
     required this.isLocal,
     required this.enabled,
   });
 
   @override
+  State<_DeviceRow> createState() => _DeviceRowState();
+}
+
+class _DeviceRowState extends State<_DeviceRow> {
+  _DeviceTransferState _transferState = _DeviceTransferState.idle;
+  String? _sessionId;
+
+  @override
   Widget build(BuildContext context) {
     final colors = _TanDropColors.of(context);
+    final sessions = context.watch(sendProvider);
+    final progressNotifier = context.watch(progressProvider);
+    final session = _sessionId == null ? null : sessions[_sessionId];
+    final progress = session == null
+        ? 0.0
+        : _calculateProgress(session, progressNotifier);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
       decoration: BoxDecoration(
         color: colors.subtleSurface,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isLocal ? colors.divider : colors.divider),
+        border: Border.all(color: colors.divider),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(device.deviceType.icon, size: 30, color: colors.text),
-          const SizedBox(width: 13),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+          Row(
+            children: [
+              Icon(widget.device.deviceType.icon, size: 30, color: colors.text),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Flexible(
-                      child: Text(
-                        device.alias,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            widget.device.alias,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                        if (widget.isLocal) ...[
+                          const SizedBox(width: 8),
+                          _Tag(text: '本机'),
+                        ],
+                      ],
                     ),
-                    if (isLocal) ...[
-                      const SizedBox(width: 8),
-                      _Tag(text: '本机'),
-                    ],
+                    const SizedBox(height: 4),
+                    Text(
+                      '${widget.device.ip}  ·  ${widget.device.deviceModel}',
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: colors.muted),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  '${device.ip}  ·  ${device.deviceModel}',
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(color: colors.muted),
-                ),
-              ],
-            ),
+              ),
+              _buildTrailing(context, colors),
+            ],
           ),
-          if (isLocal)
-            Text(
-              '本机',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: colors.muted),
-            )
-          else
-            OutlinedButton(
-              onPressed: enabled
-                  ? () async {
-                      await _sendToDevice(context, device);
-                    }
-                  : null,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: colors.primary,
-                side: BorderSide(color: colors.primary),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+          if (!widget.isLocal && _transferState == _DeviceTransferState.sending) ...[
+            const SizedBox(height: 9),
+            Padding(
+              padding: const EdgeInsets.only(left: 43),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(99),
+                child: LinearProgressIndicator(
+                  value: progress.clamp(0.0, 1.0),
+                  minHeight: 3,
+                  color: colors.primary,
+                  backgroundColor: colors.primarySoft,
                 ),
               ),
-              child: const Text('发送'),
             ),
+          ],
         ],
       ),
     );
   }
 
-  Future<void> _sendToDevice(BuildContext context, Device target) async {
+  Widget _buildTrailing(BuildContext context, _TanDropColors colors) {
+    if (widget.isLocal) {
+      return Text(
+        '本机',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colors.muted),
+      );
+    }
+
+    if (_transferState == _DeviceTransferState.sending) {
+      return SizedBox(
+        width: 72,
+        child: Text(
+          '传输中',
+          textAlign: TextAlign.right,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colors.primary,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+      );
+    }
+
+    if (_transferState == _DeviceTransferState.completed) {
+      return const Icon(Icons.check_circle_rounded, color: Color(0xFF27AE60), size: 22);
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_transferState == _DeviceTransferState.failed) ...[
+          const Icon(Icons.cancel_rounded, color: Color(0xFFE05252), size: 20),
+          const SizedBox(width: 7),
+        ],
+        OutlinedButton(
+          onPressed: widget.enabled ? () => _sendToDevice(context) : null,
+          style: OutlinedButton.styleFrom(
+            foregroundColor: colors.primary,
+            side: BorderSide(color: colors.primary),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          child: const Text('发送'),
+        ),
+      ],
+    );
+  }
+
+  double _calculateProgress(
+    SendSessionState session,
+    ProgressNotifier progressNotifier,
+  ) {
+    final totalSize = session.files.values.fold<int>(
+      0,
+      (sum, file) => sum + file.file.size,
+    );
+    if (totalSize == 0) return 0;
+    final sentSize = session.files.values.fold<double>(
+      0,
+      (sum, file) =>
+          sum + file.file.size * progressNotifier.getProgress(
+                sessionId: session.sessionId,
+                fileId: file.file.id,
+              ),
+    );
+    return sentSize / totalSize;
+  }
+
+  Future<void> _sendToDevice(BuildContext context) async {
     final files = context.ref.read(selectedSendingFilesProvider);
     if (files.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在左侧选择要发送的文件。')),
+      );
       return;
     }
-    await context.ref
-        .notifier(sendProvider)
-        .startSession(target: target, files: files, background: true);
+    setState(() {
+      _transferState = _DeviceTransferState.sending;
+      _sessionId = null;
+    });
+
+    try {
+      final result = await context.ref.notifier(sendProvider).startSession(
+            target: widget.device,
+            files: files,
+            background: true,
+            onSessionCreated: (sessionId) {
+              if (mounted) setState(() => _sessionId = sessionId);
+            },
+          );
+      if (!mounted) return;
+      setState(() {
+        _transferState = result == SessionStatus.finished
+            ? _DeviceTransferState.completed
+            : _DeviceTransferState.failed;
+        _sessionId = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _transferState = _DeviceTransferState.failed;
+        _sessionId = null;
+      });
+    }
   }
 }
 

@@ -3,15 +3,19 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:common/model/device.dart';
+import 'package:common/model/session_status.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:localsend_app/gen/assets.gen.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/persistence/receive_history_entry.dart';
+import 'package:localsend_app/model/state/send/send_session_state.dart';
 import 'package:localsend_app/provider/device_info_provider.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
+import 'package:localsend_app/provider/network/send_provider.dart';
+import 'package:localsend_app/provider/progress_provider.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/receive_history_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
@@ -26,7 +30,6 @@ import 'package:localsend_app/util/native/open_file.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
 import 'package:localsend_app/util/native/pick_directory_path.dart';
 import 'package:localsend_app/widget/dialogs/qr_dialog.dart';
-import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:localsend_app/widget/file_thumbnail.dart';
 import 'package:path/path.dart' as path;
 import 'package:refena_flutter/refena_flutter.dart';
@@ -843,7 +846,7 @@ class _NearbyDevicesCard extends StatelessWidget {
   }
 }
 
-class _DeviceRow extends StatelessWidget {
+class _DeviceRow extends StatefulWidget {
   final Device device;
   final bool isLocal;
   final bool enabled;
@@ -855,18 +858,35 @@ class _DeviceRow extends StatelessWidget {
   });
 
   @override
+  State<_DeviceRow> createState() => _DeviceRowState();
+}
+
+class _DeviceRowState extends State<_DeviceRow> with Refena {
+  SessionStatus? _terminalStatus;
+
+  @override
   Widget build(BuildContext context) {
+    final sessions = ref.watch(sendProvider);
+    SendSessionState? session;
+    for (final candidate in sessions.values) {
+      if (candidate.target.ip == widget.device.ip) {
+        session = candidate;
+        break;
+      }
+    }
+    final progressNotifier = ref.watch(progressProvider);
+    final progress = session == null ? null : _sendProgress(session, progressNotifier);
     final colors = _TanDropColors.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
       decoration: BoxDecoration(
         color: colors.subtleSurface,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isLocal ? colors.divider : colors.divider),
+        border: Border.all(color: colors.divider),
       ),
       child: Row(
         children: [
-          Icon(device.deviceType.icon, size: 30, color: colors.text),
+          Icon(widget.device.deviceType.icon, size: 30, color: colors.text),
           const SizedBox(width: 13),
           Expanded(
             child: Column(
@@ -876,14 +896,14 @@ class _DeviceRow extends StatelessWidget {
                   children: [
                     Flexible(
                       child: Text(
-                        device.alias,
+                        widget.device.alias,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w700,
                             ),
                       ),
                     ),
-                    if (isLocal) ...[
+                    if (widget.isLocal) ...[
                       const SizedBox(width: 8),
                       _Tag(text: '本机'),
                     ],
@@ -891,29 +911,41 @@ class _DeviceRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${device.ip}  ·  ${device.deviceModel}',
+                  '${widget.device.ip}  ·  ${widget.device.deviceModel}',
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(
                     context,
                   ).textTheme.bodySmall?.copyWith(color: colors.muted),
                 ),
+                if (progress != null) ...[
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 5,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
-          if (isLocal)
+          if (widget.isLocal)
             Text(
               '本机',
               style: Theme.of(
                 context,
               ).textTheme.bodySmall?.copyWith(color: colors.muted),
             )
+          else if (progress != null)
+            const SizedBox(width: 24)
+          else if (_terminalStatus == SessionStatus.finished)
+            const Icon(Icons.check_circle_rounded, color: Colors.green)
+          else if (_terminalStatus != null)
+            const Icon(Icons.cancel_rounded, color: Colors.red)
           else
             OutlinedButton(
-              onPressed: enabled
-                  ? () async {
-                      await _sendToDevice(context, device);
-                    }
-                  : null,
+              onPressed: widget.enabled ? () => _sendToDevice(widget.device) : null,
               style: OutlinedButton.styleFrom(
                 foregroundColor: colors.primary,
                 side: BorderSide(color: colors.primary),
@@ -932,16 +964,24 @@ class _DeviceRow extends StatelessWidget {
     );
   }
 
-  Future<void> _sendToDevice(BuildContext context, Device target) async {
-    final files = context.ref.read(selectedSendingFilesProvider);
+  Future<void> _sendToDevice(Device target) async {
+    final files = ref.read(selectedSendingFilesProvider);
     if (files.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
       return;
     }
-    await WindowsSendCard.open(context, suggestedTarget: target);
+    setState(() => _terminalStatus = null);
+    final result = await ref.notifier(sendProvider).startSession(target: target, files: files, background: true);
+    if (mounted) setState(() => _terminalStatus = result);
   }
+}
+
+double _sendProgress(SendSessionState session, ProgressNotifier notifier) {
+  final files = session.files.values.where((file) => file.token != null);
+  final total = files.fold<int>(0, (sum, file) => sum + file.file.size);
+  if (total == 0) return 0;
+  final current = files.fold<int>(0, (sum, file) => sum + (notifier.getProgress(sessionId: session.sessionId, fileId: file.file.id) * file.file.size).round());
+  return current / total;
 }
 
 class _EmptyDevices extends StatelessWidget {
