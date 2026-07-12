@@ -44,6 +44,7 @@ import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
 import 'package:localsend_app/util/simple_server.dart';
 import 'package:localsend_app/widget/dialogs/open_file_dialog.dart';
+import 'package:localsend_app/widget/dialogs/windows_receive_card.dart';
 import 'package:logging/logging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:routerino/routerino.dart';
@@ -299,6 +300,16 @@ class ReceiveController {
       selection = {
         for (final f in dto.files.values) f.id: f.fileName,
       };
+      if (checkPlatform([TargetPlatform.windows])) {
+        WindowsReceiveCardController.showReceiving(
+          WindowsReceiveRequest(
+            sessionId: sessionId,
+            senderAlias: server.getState().session!.senderAlias,
+            files: dto.files.values.toList(),
+            destination: destinationDir,
+          ),
+        );
+      }
     } else {
       if (checkPlatform([TargetPlatform.macOS])) {
         final firstFile = dto.files.values.first;
@@ -323,6 +334,42 @@ class ReceiveController {
           selection = {
             for (final f in dto.files.values) f.id: f.fileName,
           };
+        } else {
+          Future.delayed(Duration.zero, closeSession);
+          selection = null;
+        }
+      } else if (checkPlatform([TargetPlatform.windows])) {
+        // Windows 使用右上角接收卡片，不跳转 ReceivePage，避免收文件时弹出主界面。
+        final accepted = await WindowsReceiveCardController.request(
+          WindowsReceiveRequest(
+            sessionId: sessionId,
+            senderAlias: server.getState().session!.senderAlias,
+            files: dto.files.values.toList(),
+            destination: destinationDir,
+          ),
+        );
+        if (accepted) {
+          final message = server.getState().session?.message;
+          if (message != null) {
+            await server.ref
+                .redux(receiveHistoryProvider)
+                .dispatchAsync(AddHistoryEntryAction(
+                  entryId: const Uuid().v4(),
+                  fileName: message,
+                  fileType: FileType.text,
+                  path: null,
+                  savedToGallery: false,
+                  isMessage: true,
+                  fileSize: message.length,
+                  senderAlias: server.getState().session!.senderAlias,
+                  timestamp: DateTime.now().toUtc(),
+                ));
+            selection = {};
+          } else {
+            selection = {
+              for (final f in dto.files.values) f.id: f.fileName,
+            };
+          }
         } else {
           Future.delayed(Duration.zero, closeSession);
           selection = null;
@@ -386,6 +433,16 @@ class ReceiveController {
     }
 
     if (selection.isEmpty) {
+      if (checkPlatform([TargetPlatform.windows])) {
+        WindowsReceiveCardController.finish(
+          WindowsReceiveFinished(
+            sessionId: sessionId,
+            hasError: false,
+            openPath: null,
+            folderPath: destinationDir,
+          ),
+        );
+      }
       // nothing selected, send this to sender and close session
       // This usually happens for message transfers
       closeSession();
@@ -423,7 +480,7 @@ class ReceiveController {
       },
     );
 
-    if (quickSave) {
+    if (quickSave && !checkPlatform([TargetPlatform.windows])) {
       // ignore: use_build_context_synchronously, unawaited_futures
       Routerino.context.pushImmediately(() => ProgressPage(
             showAppBar: false,
@@ -588,6 +645,16 @@ class ReceiveController {
                 ),
               );
             }
+            if (checkPlatform([TargetPlatform.windows])) {
+              WindowsReceiveCardController.updateProgress(
+                WindowsReceiveProgress(
+                  sessionId: receiveState.sessionId,
+                  progress: savedBytes / receivingFile.file.size,
+                  currentFile:
+                      receivingFile.desiredName ?? receivingFile.file.fileName,
+                ),
+              );
+            }
           }
         },
       );
@@ -721,6 +788,26 @@ class ReceiveController {
           unawaited(macos.hideReceivePanel());
           closeSession();
         });
+      }
+      if (checkPlatform([TargetPlatform.windows])) {
+        final latestSession = server.getState().session;
+        final finishedFiles = latestSession?.files.values
+                .where((file) => file.path != null)
+                .toList() ??
+            const [];
+        final firstPath = finishedFiles.isNotEmpty
+            ? finishedFiles.first.path
+            : outerDestinationPath;
+        WindowsReceiveCardController.finish(
+          WindowsReceiveFinished(
+            sessionId: receiveState.sessionId,
+            hasError: hasError,
+            openPath: firstPath,
+            folderPath: latestSession?.destinationDirectory ??
+                session.destinationDirectory,
+          ),
+        );
+        Future.delayed(const Duration(seconds: 5), closeSession);
       }
       _logger.info('Received all files.');
     }
@@ -949,6 +1036,11 @@ void _cancelBySender(ServerUtils server) {
           endTime: DateTime.now().millisecondsSinceEpoch,
         ),
       ));
+  if (checkPlatform([TargetPlatform.windows])) {
+    WindowsReceiveCardController.cancel(
+      WindowsReceiveCanceled(sessionId: receiveSession.sessionId),
+    );
+  }
 }
 
 extension on ReceiveSessionState {

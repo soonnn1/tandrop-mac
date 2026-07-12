@@ -56,7 +56,7 @@ Future<bool> isContextMenuEnabled() async {
   }
 }
 
-const _windowsFileName = 'LocalSend';
+const _windowsFileName = 'TanDrop';
 
 String _getWindowsFilePath(String appName) {
   final appData = Platform.environment['APPDATA'];

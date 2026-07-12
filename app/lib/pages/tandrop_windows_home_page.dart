@@ -27,6 +27,7 @@ import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/file_type_ext.dart';
 import 'package:localsend_app/util/native/autostart_helper.dart';
 import 'package:localsend_app/util/native/cross_file_converters.dart';
+import 'package:localsend_app/util/native/context_menu_helper.dart';
 import 'package:localsend_app/util/native/file_picker.dart';
 import 'package:localsend_app/util/native/open_file.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
@@ -528,6 +529,43 @@ class _QuickAction extends StatelessWidget {
   }
 }
 
+class _ContextMenuToggle extends StatefulWidget {
+  const _ContextMenuToggle();
+
+  @override
+  State<_ContextMenuToggle> createState() => _ContextMenuToggleState();
+}
+
+class _ContextMenuToggleState extends State<_ContextMenuToggle> {
+  bool? _enabled;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(isContextMenuEnabled().then((value) {
+      if (mounted) setState(() => _enabled = value);
+    }));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      const Text('显示在右键菜单', style: TextStyle(fontSize: 12)),
+      Switch.adaptive(
+        value: _enabled ?? false,
+        onChanged: _enabled == null
+            ? null
+            : (value) async {
+                final success = value
+                    ? await enableContextMenu()
+                    : await disableContextMenu();
+                if (success && mounted) setState(() => _enabled = value);
+              },
+      ),
+    ]);
+  }
+}
+
 class _DropReceiveCard extends StatelessWidget {
   final List<CrossFile> files;
 
@@ -542,9 +580,12 @@ class _DropReceiveCard extends StatelessWidget {
         children: [
           _SectionTitle(
             title: '发送文件',
-            action: files.isEmpty
-                ? null
-                : TextButton.icon(
+            action: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const _ContextMenuToggle(),
+                if (files.isNotEmpty)
+                  TextButton.icon(
                     onPressed: () => context.ref
                         .redux(selectedSendingFilesProvider)
                         .dispatch(ClearSelectionAction()),
@@ -555,6 +596,8 @@ class _DropReceiveCard extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 4),
                     ),
                   ),
+              ],
+            ),
           ),
           const SizedBox(height: 14),
           DropTarget(
@@ -877,7 +920,8 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
       }
     }
     final progressNotifier = ref.watch(progressProvider);
-    final progress = session == null ? null : _sendProgress(session, progressNotifier);
+    final progress =
+        session == null ? null : _sendProgress(session, progressNotifier);
     final colors = _TanDropColors.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
@@ -973,11 +1017,14 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
   Future<void> _sendToDevice(Device target) async {
     final files = ref.read(selectedSendingFilesProvider);
     if (files.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
       return;
     }
     setState(() => _terminalStatus = null);
-    final result = await ref.notifier(sendProvider).startSession(target: target, files: files, background: true);
+    final result = await ref
+        .notifier(sendProvider)
+        .startSession(target: target, files: files, background: true);
     if (mounted) setState(() => _terminalStatus = result);
   }
 }
@@ -986,7 +1033,14 @@ double _sendProgress(SendSessionState session, ProgressNotifier notifier) {
   final files = session.files.values.where((file) => file.token != null);
   final total = files.fold<int>(0, (sum, file) => sum + file.file.size);
   if (total == 0) return 0;
-  final current = files.fold<int>(0, (sum, file) => sum + (notifier.getProgress(sessionId: session.sessionId, fileId: file.file.id) * file.file.size).round());
+  final current = files.fold<int>(
+      0,
+      (sum, file) =>
+          sum +
+          (notifier.getProgress(
+                      sessionId: session.sessionId, fileId: file.file.id) *
+                  file.file.size)
+              .round());
   return current / total;
 }
 
