@@ -11,6 +11,7 @@ import 'package:localsend_app/pages/tabs/receive_tab.dart';
 import 'package:localsend_app/pages/tabs/send_tab.dart';
 import 'package:localsend_app/pages/tabs/settings_tab.dart';
 import 'package:localsend_app/pages/tandrop_macos_home_page.dart';
+import 'package:localsend_app/pages/tandrop_windows_home_page.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/cross_file_converters.dart';
 import 'package:localsend_app/widget/responsive_builder.dart';
@@ -73,9 +74,12 @@ class _HomePageState extends State<HomePage> with Refena {
   @override
   Widget build(BuildContext context) {
     Translations.of(context); // rebuild on locale change
-    // macOS 使用独立的 TanDrop 仪表盘，不经过官方的 Tab 导航布局。
+    // 两个桌面端分别持有 UI 页面，底层发送、接收和发现逻辑仍由原有 Provider 处理。
     if (defaultTargetPlatform == TargetPlatform.macOS) {
       return const TanDropMacHomePage();
+    }
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      return const TanDropWindowsHomePage();
     }
 
     final vm = context.watch(homePageControllerProvider);
