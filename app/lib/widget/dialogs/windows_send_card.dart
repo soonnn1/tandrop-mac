@@ -65,18 +65,16 @@ class _WindowsSendWindowController {
 
   static Future<void> enterCardWindow() async {
     if (defaultTargetPlatform != TargetPlatform.windows) return;
-    if (_snapshot == null) {
-      _snapshot = _SendWindowSnapshot(
-        position: await windowManager.getPosition(),
-        size: await windowManager.getSize(),
-        visible: await windowManager.isVisible(),
-        minimized: await windowManager.isMinimized(),
-        maximized: await windowManager.isMaximized(),
-        resizable: await windowManager.isResizable(),
-        alwaysOnTop: await windowManager.isAlwaysOnTop(),
-        skipTaskbar: await windowManager.isSkipTaskbar(),
-      );
-    }
+    _snapshot ??= _SendWindowSnapshot(
+      position: await windowManager.getPosition(),
+      size: await windowManager.getSize(),
+      visible: await windowManager.isVisible(),
+      minimized: await windowManager.isMinimized(),
+      maximized: await windowManager.isMaximized(),
+      resizable: await windowManager.isResizable(),
+      alwaysOnTop: await windowManager.isAlwaysOnTop(),
+      skipTaskbar: await windowManager.isSkipTaskbar(),
+    );
 
     WindowsSendCard.isWindowCardMode = true;
     const cardWindowSize = Size(780, 600);
