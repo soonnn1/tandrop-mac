@@ -103,6 +103,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
     with Refena {
   String? _sessionId;
   SessionStatus? _terminalStatus;
+  Timer? _resetTimer;
 
   @override
   void initState() {
@@ -114,6 +115,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
 
   @override
   void dispose() {
+    _resetTimer?.cancel();
     if (defaultTargetPlatform == TargetPlatform.windows) {
       unawaited(_sendCardChannel.setMethodCallHandler(null));
     }
@@ -140,6 +142,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
         }
         return _snapshot();
       case 'close':
+        _resetSession();
         await WindowsSendCardWindowManager.markClosed();
         return null;
       default:
@@ -156,6 +159,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
     }
 
     _terminalStatus = null;
+    _resetTimer?.cancel();
     final created = Completer<String>();
     unawaited(
       ref
@@ -173,6 +177,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
           )
           .then((status) {
         _terminalStatus = status;
+        _scheduleResetIfFinished(status);
       }),
     );
     await created.future.timeout(
@@ -180,6 +185,26 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
       onTimeout: () => '',
     );
     return _snapshot();
+  }
+
+  void _scheduleResetIfFinished(SessionStatus status) {
+    if (status != SessionStatus.finished) return;
+    _resetTimer?.cancel();
+    _resetTimer = Timer(const Duration(milliseconds: 1200), () {
+      _resetSession();
+      unawaited(
+          context.global.dispatchAsync(StartSmartScan(forceLegacy: true)));
+    });
+  }
+
+  void _resetSession() {
+    _resetTimer?.cancel();
+    final sessionId = _sessionId;
+    if (sessionId != null) {
+      ref.notifier(sendProvider).closeSession(sessionId);
+    }
+    _sessionId = null;
+    _terminalStatus = null;
   }
 
   Map<String, dynamic> _snapshot() {
@@ -286,7 +311,7 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   Future<void> _configureWindow() async {
     await windowManager.ensureInitialized();
     const options = WindowOptions(
-      size: Size(760, 560),
+      size: Size(720, 520),
       center: true,
       backgroundColor: Colors.transparent,
       skipTaskbar: true,
@@ -342,15 +367,13 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: Scaffold(
-        backgroundColor: const Color(0xFF151413),
-        body: Center(
-          child: _SendCardPanel(
-            snapshot: _snapshot,
-            onRefresh: () => unawaited(_loadSnapshot(refresh: true)),
-            onSend: (ip) => unawaited(_startSend(ip)),
-            onClose: () => unawaited(_cancelOrClose()),
-          ),
+      home: ColoredBox(
+        color: Colors.transparent,
+        child: _SendCardPanel(
+          snapshot: _snapshot,
+          onRefresh: () => unawaited(_loadSnapshot(refresh: true)),
+          onSend: (ip) => unawaited(_startSend(ip)),
+          onClose: () => unawaited(_cancelOrClose()),
         ),
       ),
     );
