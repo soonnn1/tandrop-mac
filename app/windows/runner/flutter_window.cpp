@@ -4,6 +4,7 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
+#include <climits>
 #include <memory>
 #include <optional>
 
@@ -13,6 +14,88 @@
 #include "flutter/generated_plugin_registrant.h"
 
 namespace {
+
+struct SendCardWindowSearch {
+  HWND view = nullptr;
+  DWORD process_id = 0;
+  HWND best = nullptr;
+  LONG best_area = LONG_MAX;
+};
+
+BOOL CALLBACK FindSendCardTopLevelWindow(HWND window, LPARAM parameter) {
+  auto* search = reinterpret_cast<SendCardWindowSearch*>(parameter);
+  DWORD window_process_id = 0;
+  ::GetWindowThreadProcessId(window, &window_process_id);
+  if (window_process_id != search->process_id) {
+    return TRUE;
+  }
+
+  if (window != search->view && !::IsChild(window, search->view)) {
+    return TRUE;
+  }
+
+  RECT bounds{};
+  if (!::GetWindowRect(window, &bounds)) {
+    return TRUE;
+  }
+
+  const LONG width = bounds.right - bounds.left;
+  const LONG height = bounds.bottom - bounds.top;
+  const LONG area = width * height;
+  if (width > 0 && height > 0 && area < search->best_area) {
+    search->best = window;
+    search->best_area = area;
+  }
+
+  return TRUE;
+}
+
+HWND FindTopLevelWindowForView(HWND view) {
+  HWND fallback = ::GetAncestor(view, GA_ROOT);
+  DWORD process_id = 0;
+  ::GetWindowThreadProcessId(view, &process_id);
+
+  SendCardWindowSearch search;
+  search.view = view;
+  search.process_id = process_id;
+  search.best = fallback;
+  if (fallback != nullptr) {
+    RECT bounds{};
+    if (::GetWindowRect(fallback, &bounds)) {
+      search.best_area =
+          (bounds.right - bounds.left) * (bounds.bottom - bounds.top);
+    }
+  }
+
+  ::EnumWindows(FindSendCardTopLevelWindow,
+                reinterpret_cast<LPARAM>(&search));
+  return search.best;
+}
+
+bool ApplyRoundedRegion(HWND window, int logical_radius) {
+  RECT bounds{};
+  if (window == nullptr || !::GetWindowRect(window, &bounds)) {
+    return false;
+  }
+
+  const UINT dpi = ::GetDpiForWindow(window);
+  const int radius = ::MulDiv(logical_radius, dpi, 96);
+  const int width = bounds.right - bounds.left;
+  const int height = bounds.bottom - bounds.top;
+  HRGN region = ::CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                     radius * 2, radius * 2);
+  if (region == nullptr) {
+    return false;
+  }
+
+  if (!::SetWindowRgn(window, region, TRUE)) {
+    ::DeleteObject(region);
+    return false;
+  }
+
+  // SetWindowRgn 成功后由系统接管 region 的生命周期。
+  return true;
+}
 
 // 仅服务于 Windows 独立发送卡片：对真实顶层 HWND 做圆角裁剪。
 // Flutter 透明背景无法裁掉桌面多窗口插件创建的矩形原生窗口。
@@ -56,27 +139,20 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
     }
 
     HWND view = registrar_->GetView()->GetNativeWindow();
-    HWND window = ::GetAncestor(view, GA_ROOT);
-    RECT bounds{};
-    if (window == nullptr || !::GetWindowRect(window, &bounds)) {
+    HWND window = FindTopLevelWindowForView(view);
+    if (window == nullptr) {
       result->Error("WINDOW_UNAVAILABLE",
                     "Unable to locate the send card window.");
       return;
     }
 
-    const UINT dpi = ::GetDpiForWindow(window);
-    const int radius = ::MulDiv(logical_radius, dpi, 96);
-    const int width = bounds.right - bounds.left;
-    const int height = bounds.bottom - bounds.top;
-    HRGN region = ::CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                       radius * 2, radius * 2);
-    if (region == nullptr || !::SetWindowRgn(window, region, TRUE)) {
-      if (region != nullptr) {
-        ::DeleteObject(region);
-      }
+    if (!ApplyRoundedRegion(window, logical_radius)) {
       result->Error("REGION_FAILED", "Unable to apply rounded window region.");
       return;
     }
+    // desktop_multi_window 是“顶层窗口 + Flutter 子窗口”两层 HWND。
+    // 只裁顶层时，Flutter 子窗口的矩形表面仍可能在四角露出来。
+    ApplyRoundedRegion(view, logical_radius);
 
     // 关闭 DWM 额外的系统小圆角，避免它与 Flutter/SetWindowRgn
     // 的自定义圆角叠加后露出四角底色。
@@ -93,7 +169,6 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
     ::RedrawWindow(window, nullptr, nullptr,
                    RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
 
-    // SetWindowRgn 成功后由系统接管 region 的生命周期。
     result->Success();
   }
 

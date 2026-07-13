@@ -144,6 +144,13 @@ Future<RefenaContainer> preInit(List<String> args) async {
   setDefaultRouteTransition();
 
   final rawDeviceInfo = await getDeviceInfo();
+  if (defaultTargetPlatform == TargetPlatform.windows) {
+    final windowsComputerName = rawDeviceInfo.deviceModel?.trim();
+    if (windowsComputerName != null && windowsComputerName.isNotEmpty) {
+      // Windows 设备名统一跟随系统电脑名，避免继续广播旧随机别名。
+      await persistenceService.setAlias(windowsComputerName);
+    }
+  }
 
   final container = RefenaContainer(
     observers: kDebugMode ? [CustomRefenaObserver()] : [],

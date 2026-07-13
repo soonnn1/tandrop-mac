@@ -55,7 +55,12 @@ Future<DeviceInfoResult> getDeviceInfo() async {
         ]);
         break;
       case TargetPlatform.windows:
-        deviceModel = 'Windows';
+        final deviceInfo = await plugin.windowsInfo;
+        // Windows 端优先使用系统电脑名，便于附近设备看到真实主机名。
+        deviceModel = _firstNonEmpty([
+          deviceInfo.computerName,
+          'Windows',
+        ]);
         break;
       case TargetPlatform.fuchsia:
         deviceModel = 'Fuchsia';
