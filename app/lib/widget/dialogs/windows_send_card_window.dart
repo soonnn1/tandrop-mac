@@ -441,11 +441,15 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
 
   Future<void> _configureWindow() async {
     await windowManager.ensureInitialized();
+    final cardColor = _brightness == Brightness.dark
+        ? const Color(0xFF2C2A28)
+        : const Color(0xFFF7F7F7);
     final options = WindowOptions(
       size: const Size(720, 520),
       center: true,
-      // 原生宿主必须透明，否则 Flutter 圆角外依然会露出矩形底色。
-      backgroundColor: Colors.transparent,
+      // 与卡片同色，避免 Flutter 圆角抗锯齿与透明黑底混合出黑边。
+      // 外部四角仍由 Windows SetWindowRgn 真正裁掉。
+      backgroundColor: cardColor,
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
