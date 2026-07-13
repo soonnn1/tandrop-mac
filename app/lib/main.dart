@@ -55,6 +55,27 @@ class LocalSendApp extends StatelessWidget {
       ),
     );
     final dynamicColors = ref.watch(dynamicColorsProvider);
+    final app = ShortcutWatcher(
+      child: MaterialApp(
+        title: defaultTargetPlatform == TargetPlatform.macOS
+            ? 'TanDrop'
+            : t.appName,
+        locale: TranslationProvider.of(context).flutterLocale,
+        supportedLocales: AppLocaleUtils.supportedLocales,
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
+        debugShowCheckedModeBanner: false,
+        theme: getTheme(colorMode, Brightness.light, dynamicColors),
+        darkTheme: getTheme(colorMode, Brightness.dark, dynamicColors),
+        themeMode: colorMode == ColorMode.oled ? ThemeMode.dark : themeMode,
+        navigatorKey: Routerino.navigatorKey,
+        home: RouterinoHome(
+          builder: () => const HomePage(
+            initialTab: HomeTab.receive,
+            appStart: true,
+          ),
+        ),
+      ),
+    );
     return TrayWatcher(
       child: WindowWatcher(
         child: LifeCycleWatcher(
@@ -74,30 +95,10 @@ class LocalSendApp extends StatelessWidget {
                 break;
             }
           },
-          child: WindowsReceiveCardHost(
-            child: ShortcutWatcher(
-              child: MaterialApp(
-                title: defaultTargetPlatform == TargetPlatform.macOS
-                    ? 'TanDrop'
-                    : t.appName,
-                locale: TranslationProvider.of(context).flutterLocale,
-                supportedLocales: AppLocaleUtils.supportedLocales,
-                localizationsDelegates: GlobalMaterialLocalizations.delegates,
-                debugShowCheckedModeBanner: false,
-                theme: getTheme(colorMode, Brightness.light, dynamicColors),
-                darkTheme: getTheme(colorMode, Brightness.dark, dynamicColors),
-                themeMode:
-                    colorMode == ColorMode.oled ? ThemeMode.dark : themeMode,
-                navigatorKey: Routerino.navigatorKey,
-                home: RouterinoHome(
-                  builder: () => const HomePage(
-                    initialTab: HomeTab.receive,
-                    appStart: true,
-                  ),
-                ),
-              ),
-            ),
-          ),
+          // Windows 接收卡片会临时接管窗口；其他平台保持原 Widget 树不变。
+          child: defaultTargetPlatform == TargetPlatform.windows
+              ? WindowsReceiveCardHost(child: app)
+              : app,
         ),
       ),
     );

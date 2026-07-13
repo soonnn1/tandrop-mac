@@ -307,6 +307,7 @@ class ReceiveController {
             senderAlias: server.getState().session!.senderAlias,
             files: dto.files.values.toList(),
             destination: destinationDir,
+            onCancel: cancelSession,
           ),
         );
       }
@@ -346,6 +347,7 @@ class ReceiveController {
             senderAlias: server.getState().session!.senderAlias,
             files: dto.files.values.toList(),
             destination: destinationDir,
+            onCancel: cancelSession,
           ),
         );
         if (accepted) {
@@ -646,10 +648,14 @@ class ReceiveController {
               );
             }
             if (checkPlatform([TargetPlatform.windows])) {
+              final progress = _totalReceiveProgress(
+                server: server,
+                sessionId: receiveState.sessionId,
+              );
               WindowsReceiveCardController.updateProgress(
                 WindowsReceiveProgress(
                   sessionId: receiveState.sessionId,
-                  progress: savedBytes / receivingFile.file.size,
+                  progress: progress,
                   currentFile:
                       receivingFile.desiredName ?? receivingFile.file.fileName,
                 ),
@@ -746,7 +752,7 @@ class ReceiveController {
           quickSave = true;
         }
       }
-      if (quickSave) {
+      if (quickSave && !checkPlatform([TargetPlatform.windows])) {
         // close the session **after** return of the response
         Future.delayed(Duration.zero, () {
           closeSession();
@@ -854,6 +860,9 @@ class ReceiveController {
       }
 
       _cancelBySender(server);
+      if (checkPlatform([TargetPlatform.windows])) {
+        Future.delayed(const Duration(seconds: 2), closeSession);
+      }
       return await request.respondJson(200);
     } else {
       // We are not receiving files so we may be sending files.
@@ -1016,6 +1025,27 @@ class ReceiveController {
     );
     server.ref.notifier(progressProvider).removeSession(sessionId);
   }
+}
+
+double _totalReceiveProgress({
+  required ServerUtils server,
+  required String sessionId,
+}) {
+  final session = server.getStateOrNull()?.session;
+  if (session == null || session.sessionId != sessionId) return 0;
+  final files = session.files.values.where((file) => file.token != null);
+  final totalBytes = files.fold<int>(0, (sum, file) => sum + file.file.size);
+  if (totalBytes <= 0) return 0;
+
+  final progressNotifier = server.ref.notifier(progressProvider);
+  final receivedBytes = files.fold<double>(0, (sum, file) {
+    final progress = progressNotifier.getProgress(
+      sessionId: sessionId,
+      fileId: file.file.id,
+    );
+    return sum + file.file.size * progress;
+  });
+  return (receivedBytes / totalBytes).clamp(0.0, 1.0).toDouble();
 }
 
 void _cancelBySender(ServerUtils server) {

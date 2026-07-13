@@ -538,6 +538,7 @@ class _ContextMenuToggle extends StatefulWidget {
 
 class _ContextMenuToggleState extends State<_ContextMenuToggle> {
   bool? _enabled;
+  bool _updating = false;
 
   @override
   void initState() {
@@ -553,13 +554,23 @@ class _ContextMenuToggleState extends State<_ContextMenuToggle> {
       const Text('显示在右键菜单', style: TextStyle(fontSize: 12)),
       Switch.adaptive(
         value: _enabled ?? false,
-        onChanged: _enabled == null
+        onChanged: _enabled == null || _updating
             ? null
             : (value) async {
+                setState(() => _updating = true);
                 final success = value
                     ? await enableContextMenu()
                     : await disableContextMenu();
-                if (success && mounted) setState(() => _enabled = value);
+                if (!context.mounted) return;
+                setState(() {
+                  _updating = false;
+                  if (success) _enabled = value;
+                });
+                if (!success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('更新 Windows 右键菜单失败。')),
+                  );
+                }
               },
       ),
     ]);
@@ -760,7 +771,12 @@ class _NearbyDevicesCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          _DeviceRow(device: localDevice, isLocal: true, enabled: false),
+          _DeviceRow(
+            key: ValueKey('local-${localDevice.fingerprint}'),
+            device: localDevice,
+            isLocal: true,
+            enabled: false,
+          ),
           const SizedBox(height: 9),
           if (devices.isEmpty)
             _EmptyDevices(
@@ -771,6 +787,7 @@ class _NearbyDevicesCard extends StatelessWidget {
                   (device) => Padding(
                     padding: const EdgeInsets.only(bottom: 9),
                     child: _DeviceRow(
+                      key: ValueKey(device.fingerprint),
                       device: device,
                       isLocal: false,
                       enabled: hasSelectedFiles,
@@ -897,6 +914,7 @@ class _DeviceRow extends StatefulWidget {
   final bool enabled;
 
   const _DeviceRow({
+    super.key,
     required this.device,
     required this.isLocal,
     required this.enabled,
@@ -914,14 +932,20 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
     final sessions = ref.watch(sendProvider);
     SendSessionState? session;
     for (final candidate in sessions.values) {
-      if (candidate.target.ip == widget.device.ip) {
+      if (candidate.target.fingerprint == widget.device.fingerprint) {
         session = candidate;
         break;
       }
     }
+    final sessionStatus = session?.status;
+    final isTransferring = sessionStatus == SessionStatus.waiting ||
+        sessionStatus == SessionStatus.sending;
+    final terminalStatus =
+        isTransferring ? null : sessionStatus ?? _terminalStatus;
     final progressNotifier = ref.watch(progressProvider);
-    final progress =
-        session == null ? null : _sendProgress(session, progressNotifier);
+    final progress = isTransferring && session != null
+        ? _sendProgress(session, progressNotifier)
+        : null;
     final colors = _TanDropColors.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
@@ -985,9 +1009,9 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
             )
           else if (progress != null)
             const SizedBox(width: 24)
-          else if (_terminalStatus == SessionStatus.finished)
+          else if (terminalStatus == SessionStatus.finished)
             const Icon(Icons.check_circle_rounded, color: Colors.green)
-          else if (_terminalStatus != null)
+          else if (terminalStatus != null)
             const Icon(Icons.cancel_rounded, color: Colors.red)
           else
             OutlinedButton(

@@ -7,18 +7,22 @@ import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
 import 'package:localsend_app/widget/dialogs/open_file_dialog.dart';
 import 'package:routerino/routerino.dart';
+import 'package:screen_retriever/screen_retriever.dart';
+import 'package:window_manager/window_manager.dart';
 
 class WindowsReceiveRequest {
   final String sessionId;
   final String senderAlias;
   final List<FileDto> files;
   final String destination;
+  final VoidCallback? onCancel;
 
   const WindowsReceiveRequest({
     required this.sessionId,
     required this.senderAlias,
     required this.files,
     required this.destination,
+    this.onCancel,
   });
 
   int get totalSize => files.fold<int>(0, (sum, file) => sum + file.size);
@@ -93,6 +97,9 @@ class WindowsReceiveCardController {
 
   static final _events = StreamController<_WindowsReceiveEvent>.broadcast();
 
+  /// WindowWatcher 据此忽略卡片窗口的临时尺寸，避免覆盖主窗口布局记录。
+  static bool isWindowCardMode = false;
+
   static Future<bool> request(WindowsReceiveRequest request) {
     final completer = Completer<bool>();
     _events.add(_RequestEvent(request, completer, false));
@@ -128,6 +135,7 @@ class WindowsReceiveCardHost extends StatefulWidget {
 
 class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
   StreamSubscription<_WindowsReceiveEvent>? _subscription;
+  Timer? _hideTimer;
   WindowsReceiveRequest? _request;
   Completer<bool>? _decision;
   _ReceiveCardStage _stage = _ReceiveCardStage.waiting;
@@ -135,6 +143,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
   String? _currentFile;
   bool _hasError = false;
   String? _openPath;
+  _WindowSnapshot? _windowSnapshot;
 
   @override
   void initState() {
@@ -148,6 +157,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
 
   @override
   void dispose() {
+    _hideTimer?.cancel();
     unawaited(_subscription?.cancel());
     if (_decision != null && !_decision!.isCompleted) {
       _decision!.complete(false);
@@ -182,15 +192,18 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
           _hasError = event.finished.hasError;
           _openPath = event.finished.openPath;
         });
-        Future.delayed(const Duration(seconds: 4), _hide);
+        _scheduleHide(const Duration(seconds: 4), event.finished.sessionId);
         break;
       case _CanceledEvent():
         if (_request?.sessionId != event.canceled.sessionId) return;
+        if (_decision != null && !_decision!.isCompleted) {
+          _decision!.complete(false);
+        }
         setState(() {
           _stage = _ReceiveCardStage.failed;
           _hasError = true;
         });
-        Future.delayed(const Duration(seconds: 2), _hide);
+        _scheduleHide(const Duration(seconds: 2), event.canceled.sessionId);
         break;
     }
   }
@@ -200,6 +213,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
     Completer<bool> decision, {
     required bool alreadyAccepted,
   }) {
+    _hideTimer?.cancel();
     if (_decision != null && !_decision!.isCompleted) {
       _decision!.complete(false);
     }
@@ -214,6 +228,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
       _hasError = false;
       _openPath = null;
     });
+    unawaited(_enterCardWindow());
   }
 
   Widget _buildCard(BuildContext context) {
@@ -253,8 +268,13 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
   }
 
   void _decline() {
-    if (_decision != null && !_decision!.isCompleted) {
+    if (_stage == _ReceiveCardStage.waiting &&
+        _decision != null &&
+        !_decision!.isCompleted) {
       _decision!.complete(false);
+    } else {
+      // 接收阶段的“取消”必须真正终止会话，不能只隐藏界面。
+      _request?.onCancel?.call();
     }
     _hide();
   }
@@ -280,21 +300,138 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
 
   void _hide() {
     if (!mounted) return;
+    _hideTimer?.cancel();
     setState(() {
       _request = null;
       _decision = null;
     });
+    unawaited(_restoreMainWindow());
+  }
+
+  void _scheduleHide(Duration delay, String sessionId) {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(delay, () {
+      // 旧会话的延时任务不能误关后来出现的新卡片。
+      if (_request?.sessionId == sessionId) {
+        _hide();
+      }
+    });
+  }
+
+  Future<void> _enterCardWindow() async {
+    if (_windowSnapshot == null) {
+      final snapshot = _WindowSnapshot(
+        position: await windowManager.getPosition(),
+        size: await windowManager.getSize(),
+        visible: await windowManager.isVisible(),
+        minimized: await windowManager.isMinimized(),
+        maximized: await windowManager.isMaximized(),
+        resizable: await windowManager.isResizable(),
+        alwaysOnTop: await windowManager.isAlwaysOnTop(),
+        skipTaskbar: await windowManager.isSkipTaskbar(),
+      );
+      if (!mounted || _request == null) return;
+      setState(() => _windowSnapshot ??= snapshot);
+    }
+
+    WindowsReceiveCardController.isWindowCardMode = true;
+    const cardWindowSize = Size(724, 266);
+    final display = await ScreenRetriever.instance.getPrimaryDisplay();
+    final visiblePosition = display.visiblePosition ?? Offset.zero;
+    final visibleSize = display.visibleSize ?? display.size;
+    final position = Offset(
+      visiblePosition.dx + visibleSize.width - cardWindowSize.width - 22,
+      visiblePosition.dy + 18,
+    );
+
+    if (await windowManager.isMaximized()) {
+      await windowManager.unmaximize();
+    }
+    if (await windowManager.isMinimized()) {
+      await windowManager.restore();
+    }
+    await windowManager.setMinimumSize(const Size(400, 200));
+    await windowManager.setResizable(false);
+    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    await windowManager.setAlwaysOnTop(true);
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.setSize(cardWindowSize);
+    await windowManager.setPosition(position);
+    await windowManager.show();
+    await windowManager.focus();
+  }
+
+  Future<void> _restoreMainWindow() async {
+    final snapshot = _windowSnapshot;
+    if (snapshot == null) return;
+    _windowSnapshot = null;
+
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setMinimumSize(const Size(400, 500));
+    await windowManager.setResizable(snapshot.resizable);
+    await windowManager.setSize(snapshot.size);
+    await windowManager.setPosition(snapshot.position);
+    if (snapshot.maximized) {
+      await windowManager.maximize();
+    }
+    await windowManager.setAlwaysOnTop(snapshot.alwaysOnTop);
+    await windowManager.setSkipTaskbar(snapshot.skipTaskbar);
+    if (!snapshot.visible) {
+      await windowManager.hide();
+    } else if (snapshot.minimized) {
+      await windowManager.minimize();
+    } else {
+      await windowManager.show();
+    }
+    WindowsReceiveCardController.isWindowCardMode = false;
   }
 
   @override
   Widget build(BuildContext context) {
+    final mainWindowSize = _windowSnapshot?.size;
     return Stack(
       children: [
-        widget.child,
+        Offstage(
+          offstage: _request != null,
+          child: mainWindowSize == null
+              ? widget.child
+              : OverflowBox(
+                  alignment: Alignment.topLeft,
+                  minWidth: mainWindowSize.width,
+                  maxWidth: mainWindowSize.width,
+                  minHeight: mainWindowSize.height,
+                  maxHeight: mainWindowSize.height,
+                  child: widget.child,
+                ),
+        ),
+        if (_request != null)
+          const Positioned.fill(child: ColoredBox(color: Color(0xFF151413))),
         if (_request != null) _buildCard(context),
       ],
     );
   }
+}
+
+class _WindowSnapshot {
+  final Offset position;
+  final Size size;
+  final bool visible;
+  final bool minimized;
+  final bool maximized;
+  final bool resizable;
+  final bool alwaysOnTop;
+  final bool skipTaskbar;
+
+  const _WindowSnapshot({
+    required this.position,
+    required this.size,
+    required this.visible,
+    required this.minimized,
+    required this.maximized,
+    required this.resizable,
+    required this.alwaysOnTop,
+    required this.skipTaskbar,
+  });
 }
 
 enum _ReceiveCardStage {

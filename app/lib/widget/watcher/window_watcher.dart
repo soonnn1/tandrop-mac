@@ -6,6 +6,7 @@ import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/provider/window_dimensions_provider.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
+import 'package:localsend_app/widget/dialogs/windows_receive_card.dart';
 import 'package:logging/logging.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:window_manager/window_manager.dart';
@@ -29,11 +30,13 @@ class WindowWatcher extends StatefulWidget {
   }
 }
 
-class _WindowWatcherState extends State<WindowWatcher> with WindowListener, Refena {
+class _WindowWatcherState extends State<WindowWatcher>
+    with WindowListener, Refena {
   static WindowDimensionsController? _dimensionsController;
   static Stopwatch s = Stopwatch();
 
-  WindowDimensionsController _ensureDimensionsProvider() => ref.watch(windowDimensionProvider);
+  WindowDimensionsController _ensureDimensionsProvider() =>
+      ref.watch(windowDimensionProvider);
 
   @override
   Widget build(BuildContext context) {
@@ -71,27 +74,33 @@ class _WindowWatcherState extends State<WindowWatcher> with WindowListener, Refe
       s.reset();
       final windowOffset = await windowManager.getPosition();
       final windowSize = await windowManager.getSize();
-      await _dimensionsController?.storeDimensions(windowOffset: windowOffset, windowSize: windowSize);
+      await _dimensionsController?.storeDimensions(
+          windowOffset: windowOffset, windowSize: windowSize);
     }
   }
 
   @override
   Future<void> onWindowMoved() async {
+    if (WindowsReceiveCardController.isWindowCardMode) return;
     final windowOffset = await windowManager.getPosition();
     await _dimensionsController?.storePosition(windowOffset: windowOffset);
   }
 
   @override
   Future<void> onWindowResized() async {
+    if (WindowsReceiveCardController.isWindowCardMode) return;
     final windowSize = await windowManager.getSize();
     await _dimensionsController?.storeSize(windowSize: windowSize);
   }
 
   @override
   Future<void> onWindowClose() async {
-    final windowOffset = await windowManager.getPosition();
-    final windowSize = await windowManager.getSize();
-    await _dimensionsController?.storeDimensions(windowOffset: windowOffset, windowSize: windowSize);
+    if (!WindowsReceiveCardController.isWindowCardMode) {
+      final windowOffset = await windowManager.getPosition();
+      final windowSize = await windowManager.getSize();
+      await _dimensionsController?.storeDimensions(
+          windowOffset: windowOffset, windowSize: windowSize);
+    }
 
     if (!checkPlatformIsDesktop()) {
       return;
