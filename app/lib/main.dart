@@ -1,4 +1,5 @@
 import 'package:common/isolate.dart';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -13,12 +14,14 @@ import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/util/ui/dynamic_colors.dart';
 import 'package:localsend_app/widget/dialogs/windows_receive_card.dart';
+import 'package:localsend_app/widget/dialogs/windows_send_card_window.dart';
 import 'package:localsend_app/widget/watcher/life_cycle_watcher.dart';
 import 'package:localsend_app/widget/watcher/shortcut_watcher.dart';
 import 'package:localsend_app/widget/watcher/tray_watcher.dart';
 import 'package:localsend_app/widget/watcher/window_watcher.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:routerino/routerino.dart';
+import 'package:window_manager/window_manager.dart';
 
 Future<void> main(List<String> args) async {
   // 关闭调试基线绘制，避免调试运行时在富文本基线下显示黄色横线。
@@ -26,6 +29,16 @@ Future<void> main(List<String> args) async {
     debugPaintBaselinesEnabled = false;
     return true;
   }());
+
+  WidgetsFlutterBinding.ensureInitialized();
+  if (defaultTargetPlatform == TargetPlatform.windows) {
+    await windowManager.ensureInitialized();
+    final controller = await WindowController.fromCurrentEngine();
+    if (isWindowsSendCardWindowArguments(controller.arguments)) {
+      await runWindowsSendCardWindow(controller.arguments);
+      return;
+    }
+  }
 
   final RefenaContainer container;
   try {
@@ -76,6 +89,10 @@ class LocalSendApp extends StatelessWidget {
         ),
       ),
     );
+    final bridgedApp = defaultTargetPlatform == TargetPlatform.windows
+        ? WindowsSendCardBridge(child: app)
+        : app;
+
     return TrayWatcher(
       child: WindowWatcher(
         child: LifeCycleWatcher(
@@ -97,8 +114,8 @@ class LocalSendApp extends StatelessWidget {
           },
           // Windows 接收卡片会临时接管窗口；其他平台保持原 Widget 树不变。
           child: defaultTargetPlatform == TargetPlatform.windows
-              ? WindowsReceiveCardHost(child: app)
-              : app,
+              ? WindowsReceiveCardHost(child: bridgedApp)
+              : bridgedApp,
         ),
       ),
     );

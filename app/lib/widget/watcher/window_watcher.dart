@@ -7,7 +7,6 @@ import 'package:localsend_app/provider/window_dimensions_provider.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
 import 'package:localsend_app/widget/dialogs/windows_receive_card.dart';
-import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:logging/logging.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:window_manager/window_manager.dart';
@@ -135,7 +134,5 @@ class _WindowWatcherState extends State<WindowWatcher>
     ref.notifier(sleepProvider).setState((_) => false);
   }
 
-  bool get _isWindowsCardMode =>
-      WindowsReceiveCardController.isWindowCardMode ||
-      WindowsSendCard.isWindowCardMode;
+  bool get _isWindowsCardMode => WindowsReceiveCardController.isWindowCardMode;
 }
