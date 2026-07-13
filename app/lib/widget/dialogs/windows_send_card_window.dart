@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:localsend_app/model/cross_file.dart';
+import 'package:localsend_app/model/persistence/color_mode.dart';
 import 'package:localsend_app/model/state/send/send_session_state.dart';
 import 'package:localsend_app/model/state/server/server_state.dart';
 import 'package:localsend_app/provider/local_ip_provider.dart';
@@ -39,6 +40,17 @@ const _sendCardChannel = WindowMethodChannel(
 const _sendCardNativeChannel = MethodChannel(
   'tandrop/windows_send_card_native',
 );
+
+Brightness _brightnessFromSnapshot(
+  Map<String, dynamic> snapshot,
+  Brightness fallback,
+) {
+  return snapshot['brightness'] == Brightness.dark.name
+      ? Brightness.dark
+      : snapshot['brightness'] == Brightness.light.name
+          ? Brightness.light
+          : fallback;
+}
 
 bool isWindowsSendCardWindowArguments(String arguments) {
   try {
@@ -305,6 +317,8 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
     final metrics = _metricsOf(session, ref.read(progressProvider));
 
     return {
+      // 独立 Flutter 引擎无法直接读取主窗口主题，通过快照同步。
+      'brightness': _currentBrightness().name,
       'files': _filesToJson(files),
       'devices': devices.map(_deviceToJson).toList(),
       'session': {
@@ -316,6 +330,18 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
         'remainingLabel': metrics.remainingLabel,
       },
     };
+  }
+
+  Brightness _currentBrightness() {
+    final settings = ref.read(settingsProvider);
+    if (settings.colorMode == ColorMode.oled ||
+        settings.theme == ThemeMode.dark) {
+      return Brightness.dark;
+    }
+    if (settings.theme == ThemeMode.light) {
+      return Brightness.light;
+    }
+    return WidgetsBinding.instance.platformDispatcher.platformBrightness;
   }
 
   Map<String, dynamic> _filesToJson(List<CrossFile> files) {
@@ -380,6 +406,8 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   String? _qrPin;
   String? _qrError;
   bool _qrLoading = false;
+  Brightness _brightness =
+      WidgetsBinding.instance.platformDispatcher.platformBrightness;
 
   @override
   void initState() {
@@ -390,8 +418,14 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
     debugPaintPointersEnabled = false;
     debugRepaintRainbowEnabled = false;
     windowManager.addListener(this);
-    unawaited(_configureWindow());
-    unawaited(_loadSnapshot(refresh: true));
+    unawaited(_initializeWindow());
+  }
+
+  Future<void> _initializeWindow() async {
+    // 先取得主窗口主题，避免卡片先显示错误颜色再跳变。
+    await _loadSnapshot(refresh: true);
+    if (!mounted) return;
+    await _configureWindow();
     _pollTimer = Timer.periodic(
       const Duration(milliseconds: 500),
       (_) => unawaited(_loadSnapshot()),
@@ -407,12 +441,14 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
 
   Future<void> _configureWindow() async {
     await windowManager.ensureInitialized();
-    const options = WindowOptions(
-      size: Size(720, 520),
+    final cardColor = _brightness == Brightness.dark
+        ? const Color(0xFF2C2A28)
+        : const Color(0xFFF7F7F7);
+    final options = WindowOptions(
+      size: const Size(720, 520),
       center: true,
-      // Windows 不可靠地支持此多窗口插件的透明背景；使用卡片同色底，
-      // 从根源去除四角的白色默认窗口底。
-      backgroundColor: Color(0xFF2C2A28),
+      // 原生窗口底色与 Flutter 卡片一致，再由 SetWindowRgn 裁掉四角。
+      backgroundColor: cardColor,
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
@@ -427,6 +463,8 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
       // 等待 Flutter 首帧，不能让原生窗口的默认白底先暴露出来。
       await Future<void>.delayed(const Duration(milliseconds: 120));
       await windowManager.show();
+      // 显示后窗口 DPI/尺寸已稳定，再裁一次避免矩形外角。
+      await _sendCardNativeChannel.invokeMethod<void>('setRoundedRegion', 34);
       await windowManager.focus();
     });
   }
@@ -437,8 +475,11 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
         refresh ? 'refresh' : 'snapshot',
       );
       if (!mounted || result == null) return;
+      final data = result.cast<String, dynamic>();
+      final brightness = _brightnessFromSnapshot(data, _brightness);
       setState(() {
-        _snapshot = result.cast<String, dynamic>();
+        _snapshot = data;
+        _brightness = brightness;
         _connectionError = null;
       });
     } catch (_) {
@@ -523,32 +564,40 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xFF00A99D),
+      brightness: _brightness,
+      surface: _brightness == Brightness.dark
+          ? const Color(0xFF2C2A28)
+          : const Color(0xFFF7F7F7),
+    );
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF00A99D),
-          brightness: Brightness.dark,
-          surface: const Color(0xFF2C2A28),
-        ),
-        scaffoldBackgroundColor: const Color(0xFF2C2A28),
+        useMaterial3: true,
+        brightness: _brightness,
+        colorScheme: colorScheme,
+        scaffoldBackgroundColor: colorScheme.surface,
       ),
-      home: Material(
-        color: const Color(0xFF2C2A28),
-        child: _SendCardPanel(
-          snapshot: _snapshot,
-          connectionError: _connectionError,
-          qrUrl: _qrUrl,
-          qrPin: _qrPin,
-          qrError: _qrError,
-          qrLoading: _qrLoading,
-          onRefresh: () => unawaited(_loadSnapshot(refresh: true)),
-          onSend: (ip) => unawaited(_startSend(ip)),
-          onQr: () => unawaited(_showQr()),
-          onHideQr: _hideQr,
-          onTerminate: () => unawaited(_terminateTransfer()),
-          onClose: () => unawaited(_close()),
+      home: ClipRRect(
+        borderRadius: BorderRadius.circular(34),
+        clipBehavior: Clip.antiAlias,
+        child: Material(
+          color: colorScheme.surface,
+          child: _SendCardPanel(
+            snapshot: _snapshot,
+            connectionError: _connectionError,
+            qrUrl: _qrUrl,
+            qrPin: _qrPin,
+            qrError: _qrError,
+            qrLoading: _qrLoading,
+            onRefresh: () => unawaited(_loadSnapshot(refresh: true)),
+            onSend: (ip) => unawaited(_startSend(ip)),
+            onQr: () => unawaited(_showQr()),
+            onHideQr: _hideQr,
+            onTerminate: () => unawaited(_terminateTransfer()),
+            onClose: () => unawaited(_close()),
+          ),
         ),
       ),
     );
@@ -586,6 +635,7 @@ class _SendCardPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     final files = (snapshot?['files'] as Map?)?.cast<String, dynamic>() ??
         <String, dynamic>{};
     final devices = (snapshot?['devices'] as List?)
@@ -609,10 +659,9 @@ class _SendCardPanel extends StatelessWidget {
       height: 520,
       padding: const EdgeInsets.fromLTRB(34, 26, 34, 28),
       decoration: BoxDecoration(
-        color: const Color(0xFF2C2A28),
+        color: colors.surface,
         borderRadius: BorderRadius.circular(34),
-        border: Border.all(color: const Color(0xFF6B6864), width: 1.4),
-        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 36)],
+        border: Border.all(color: colors.outlineVariant, width: 1.4),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -621,15 +670,15 @@ class _SendCardPanel extends StatelessWidget {
             children: [
               IconButton(
                 onPressed: onClose,
-                icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                icon: Icon(Icons.close_rounded, color: colors.onSurfaceVariant),
               ),
-              const CircleAvatar(
+              CircleAvatar(
                 radius: 39,
                 backgroundColor: Color(0xFF35699B),
                 child: Icon(
                   Icons.person_rounded,
                   size: 54,
-                  color: Color(0xFF2C2A28),
+                  color: colors.surface,
                 ),
               ),
               const SizedBox(width: 22),
@@ -637,18 +686,18 @@ class _SendCardPanel extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'TanDrop',
                       style: TextStyle(
-                        color: Colors.white,
+                        color: colors.onSurface,
                         fontSize: 34,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
                     Text(
                       '准备发送 $count 个项目',
-                      style: const TextStyle(
-                        color: Colors.white70,
+                      style: TextStyle(
+                        color: colors.onSurfaceVariant,
                         fontSize: 23,
                       ),
                     ),
@@ -656,8 +705,8 @@ class _SendCardPanel extends StatelessWidget {
                       '$firstName · ${totalSize.asReadableFileSize}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white60,
+                      style: TextStyle(
+                        color: colors.onSurfaceVariant.withOpacity(0.8),
                         fontSize: 17,
                       ),
                     ),
@@ -671,7 +720,7 @@ class _SendCardPanel extends StatelessWidget {
               ),
             ],
           ),
-          const Divider(color: Color(0xFF68645F), height: 34),
+          Divider(color: colors.outlineVariant, height: 34),
           Expanded(
             child: showingQr
                 ? _QrDownloadView(
@@ -688,7 +737,7 @@ class _SendCardPanel extends StatelessWidget {
                       )
                     : _TransferStatus(session: session),
           ),
-          const Divider(color: Color(0xFF68645F), height: 30),
+          Divider(color: colors.outlineVariant, height: 30),
           Row(
             children: [
               OutlinedButton.icon(
@@ -710,7 +759,9 @@ class _SendCardPanel extends StatelessWidget {
                 style: FilledButton.styleFrom(
                   backgroundColor: isTransferring
                       ? Colors.red.shade700
-                      : const Color(0xFF56524F),
+                      : colors.surfaceContainerHighest,
+                  foregroundColor:
+                      isTransferring ? Colors.white : colors.onSurfaceVariant,
                 ),
                 child: Text(
                   isTransferring
@@ -735,6 +786,7 @@ class _FilePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     final typeName = files['firstType'] as String?;
     final fileType = FileType.values.firstWhere(
       (type) => type.name == typeName,
@@ -763,9 +815,9 @@ class _FilePreview extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: ColoredBox(
-        color: const Color(0xFFD7F0EA),
+        color: colors.secondaryContainer,
         child: IconTheme(
-          data: const IconThemeData(color: Color(0xFF1D2C2A)),
+          data: IconThemeData(color: colors.onSecondaryContainer),
           child: Center(child: preview),
         ),
       ),
@@ -788,6 +840,7 @@ class _QrDownloadView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     if (loading) {
       return const Center(child: CircularProgressIndicator(strokeWidth: 3));
     }
@@ -801,7 +854,7 @@ class _QrDownloadView extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               error!,
-              style: const TextStyle(color: Colors.white70, fontSize: 18),
+              style: TextStyle(color: colors.onSurfaceVariant, fontSize: 18),
             ),
           ],
         ),
@@ -836,25 +889,28 @@ class _QrDownloadView extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   '扫码下载文件',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: colors.onSurface,
                     fontSize: 22,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
                 const SizedBox(height: 10),
-                const Text(
+                Text(
                   '手机连接同一局域网后，用浏览器扫码即可下载。',
-                  style: TextStyle(color: Colors.white70, fontSize: 15),
+                  style: TextStyle(
+                    color: colors.onSurfaceVariant,
+                    fontSize: 15,
+                  ),
                 ),
                 if (pin != null) ...[
                   const SizedBox(height: 14),
                   Text(
                     '访问码  $pin',
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: colors.onSurface,
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
                     ),
@@ -882,6 +938,7 @@ class _DevicePicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     if (devices.isEmpty) {
       return Center(
         child: Column(
@@ -895,7 +952,7 @@ class _DevicePicker extends StatelessWidget {
             const SizedBox(height: 14),
             Text(
               connectionError ?? '正在搜索附近设备…',
-              style: const TextStyle(color: Colors.white70, fontSize: 18),
+              style: TextStyle(color: colors.onSurfaceVariant, fontSize: 18),
             ),
           ],
         ),
@@ -931,15 +988,15 @@ class _DevicePicker extends StatelessWidget {
                       height: 78,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: const Color(0xFF45413E),
+                        color: colors.surfaceContainerHighest,
                         border: Border.all(
-                          color: const Color(0xFF8B8782),
+                          color: colors.outline,
                           width: 1.5,
                         ),
                       ),
                       child: Icon(
                         deviceType.icon,
-                        color: Colors.white,
+                        color: colors.onSurface,
                         size: 38,
                       ),
                     ),
@@ -949,8 +1006,8 @@ class _DevicePicker extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: colors.onSurface,
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
                       ),
@@ -961,8 +1018,8 @@ class _DevicePicker extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white54,
+                      style: TextStyle(
+                        color: colors.onSurfaceVariant,
                         fontSize: 12,
                       ),
                     ),
@@ -984,6 +1041,7 @@ class _TransferStatus extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     final status = session['status'] as String?;
     final progress = (session['progress'] as num?)?.toDouble() ?? 0;
     final finished = status == SessionStatus.finished.name;
@@ -1008,14 +1066,14 @@ class _TransferStatus extends StatelessWidget {
                 ? Colors.greenAccent
                 : failed
                     ? Colors.redAccent
-                    : Colors.white,
+                    : colors.primary,
             size: 54,
           ),
           const SizedBox(height: 16),
           Text(
             session['message'] as String? ?? '正在发送',
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: colors.onSurface,
               fontSize: 24,
               fontWeight: FontWeight.w700,
             ),
@@ -1034,7 +1092,7 @@ class _TransferStatus extends StatelessWidget {
             Text(
               '${(progress * 100).toStringAsFixed(0)}%  ·  '
               '${session['speedLabel']}  ·  ${session['remainingLabel']}',
-              style: const TextStyle(color: Colors.white70, fontSize: 17),
+              style: TextStyle(color: colors.onSurfaceVariant, fontSize: 17),
             ),
           ],
         ],

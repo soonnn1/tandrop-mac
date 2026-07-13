@@ -7,9 +7,12 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:localsend_app/model/persistence/color_mode.dart';
+import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
 import 'package:localsend_app/widget/dialogs/open_file_dialog.dart';
+import 'package:refena_flutter/refena_flutter.dart';
 import 'package:routerino/routerino.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
@@ -22,6 +25,17 @@ const _receiveCardChannel = WindowMethodChannel(
 const _receiveCardNativeChannel = MethodChannel(
   'tandrop/windows_send_card_native',
 );
+
+Brightness _receiveBrightnessFromSnapshot(
+  Map<String, dynamic> snapshot,
+  Brightness fallback,
+) {
+  return snapshot['brightness'] == Brightness.dark.name
+      ? Brightness.dark
+      : snapshot['brightness'] == Brightness.light.name
+          ? Brightness.light
+          : fallback;
+}
 
 bool isWindowsReceiveCardWindowArguments(String arguments) {
   try {
@@ -180,7 +194,8 @@ class WindowsReceiveCardHost extends StatefulWidget {
   State<WindowsReceiveCardHost> createState() => _WindowsReceiveCardHostState();
 }
 
-class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
+class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost>
+    with Refena {
   StreamSubscription<_WindowsReceiveEvent>? _subscription;
   Timer? _hideTimer;
   WindowsReceiveRequest? _request;
@@ -365,6 +380,8 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
   Map<String, dynamic> _snapshot() {
     final request = _request;
     return {
+      // 独立接收窗口与主窗口使用同一明暗主题。
+      'brightness': _currentBrightness().name,
       'visible': request != null,
       if (request != null) ...{
         'sessionId': request.sessionId,
@@ -387,6 +404,18 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
         'openPath': _openPath,
       },
     };
+  }
+
+  Brightness _currentBrightness() {
+    final settings = ref.read(settingsProvider);
+    if (settings.colorMode == ColorMode.oled ||
+        settings.theme == ThemeMode.dark) {
+      return Brightness.dark;
+    }
+    if (settings.theme == ThemeMode.light) {
+      return Brightness.light;
+    }
+    return WidgetsBinding.instance.platformDispatcher.platformBrightness;
   }
 
   @override
@@ -415,6 +444,8 @@ class _WindowsReceiveCardWindowAppState
   bool _hasError = false;
   bool _closing = false;
   Offset? _visiblePosition;
+  Brightness _brightness =
+      WidgetsBinding.instance.platformDispatcher.platformBrightness;
 
   @override
   void initState() {
@@ -458,9 +489,12 @@ class _WindowsReceiveCardWindowAppState
     final hidden = Offset(target.dx + _windowSize.width + 24, target.dy);
     _visiblePosition = target;
 
-    const options = WindowOptions(
+    final cardColor = _brightness == Brightness.dark
+        ? const Color(0xFF252525)
+        : const Color(0xFFF3F3F3);
+    final options = WindowOptions(
       size: _windowSize,
-      backgroundColor: Color(0xFFF3F3F3),
+      backgroundColor: cardColor,
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
@@ -476,6 +510,11 @@ class _WindowsReceiveCardWindowAppState
           'setRoundedRegion', 17);
       await Future<void>.delayed(const Duration(milliseconds: 80));
       await windowManager.show();
+      // 显示后窗口尺寸才完全稳定，再应用一次原生圆角。
+      await _receiveCardNativeChannel.invokeMethod<void>(
+        'setRoundedRegion',
+        17,
+      );
       await _animateWindow(hidden, target, const Duration(milliseconds: 240));
     });
   }
@@ -487,6 +526,7 @@ class _WindowsReceiveCardWindowAppState
           .invokeMethod<Map<dynamic, dynamic>>('snapshot');
       if (!mounted || result == null) return;
       final data = result.cast<String, dynamic>();
+      final brightness = _receiveBrightnessFromSnapshot(data, _brightness);
       if (data['visible'] != true) {
         await _closeAnimated();
         return;
@@ -511,6 +551,7 @@ class _WindowsReceiveCardWindowAppState
       }).toList();
       final stageName = data['stage'] as String?;
       setState(() {
+        _brightness = brightness;
         _request = WindowsReceiveRequest(
           sessionId: data['sessionId'] as String,
           senderAlias: data['senderAlias'] as String,
@@ -580,27 +621,42 @@ class _WindowsReceiveCardWindowAppState
   @override
   Widget build(BuildContext context) {
     final request = _request;
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xFF00A99D),
+      brightness: _brightness,
+      surface: _brightness == Brightness.dark
+          ? const Color(0xFF252525)
+          : const Color(0xFFF3F3F3),
+    );
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.light(useMaterial3: true),
-      home: Material(
-        color: const Color(0xFFF3F3F3),
-        child: request == null
-            ? const SizedBox.expand()
-            : Directionality(
-                textDirection: TextDirection.ltr,
-                child: _WindowsReceiveCard(
-                  request: request,
-                  stage: _stage,
-                  progress: _progress,
-                  currentFile: _currentFile,
-                  hasError: _hasError,
-                  onAccept: () => unawaited(_invokeAction('accept')),
-                  onDecline: () => unawaited(_invokeAction('decline')),
-                  onOpen: () => unawaited(_invokeAction('open')),
-                  onOpenFolder: () => unawaited(_invokeAction('folder')),
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: _brightness,
+        colorScheme: colorScheme,
+      ),
+      home: ClipRRect(
+        borderRadius: BorderRadius.circular(17),
+        clipBehavior: Clip.antiAlias,
+        child: Material(
+          color: colorScheme.surface,
+          child: request == null
+              ? const SizedBox.expand()
+              : Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: _WindowsReceiveCard(
+                    request: request,
+                    stage: _stage,
+                    progress: _progress,
+                    currentFile: _currentFile,
+                    hasError: _hasError,
+                    onAccept: () => unawaited(_invokeAction('accept')),
+                    onDecline: () => unawaited(_invokeAction('decline')),
+                    onOpen: () => unawaited(_invokeAction('open')),
+                    onOpenFolder: () => unawaited(_invokeAction('folder')),
+                  ),
                 ),
-              ),
+        ),
       ),
     );
   }
@@ -639,13 +695,14 @@ class _WindowsReceiveCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final firstFile = request.firstFile;
+    final colors = Theme.of(context).colorScheme;
     return Container(
       width: 380,
       height: 98,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(color: const Color(0xFFB8B8B8), width: 0.8),
-        color: const Color(0xF4F3F3F3),
+        border: Border.all(color: colors.outlineVariant, width: 0.8),
+        color: colors.surface,
       ),
       child: Stack(
         children: [
@@ -663,7 +720,7 @@ class _WindowsReceiveCard extends StatelessWidget {
                 ),
                 onPressed: onDecline,
                 icon: const Icon(Icons.close, size: 14),
-                color: const Color(0xFF242424),
+                color: colors.onSurface,
               ),
             ),
           ),
@@ -698,8 +755,8 @@ class _WindowsReceiveCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
                   value: progress.clamp(0, 1),
-                  color: const Color(0xFFA8A8A8),
-                  backgroundColor: const Color(0xFFE0E0E0),
+                  color: colors.primary,
+                  backgroundColor: colors.surfaceContainerHighest,
                 ),
               ),
             )
@@ -736,6 +793,7 @@ class _TextBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     final title = switch (stage) {
       _ReceiveCardStage.waiting => request.senderAlias,
       _ReceiveCardStage.receiving => '正在接收',
@@ -762,8 +820,8 @@ class _TextBlock extends StatelessWidget {
           title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Color(0xFF1F1F1F),
+          style: TextStyle(
+            color: colors.onSurface,
             fontSize: 13,
             fontWeight: FontWeight.w800,
             height: 1.15,
@@ -773,8 +831,8 @@ class _TextBlock extends StatelessWidget {
           detail,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Color(0xFF252525),
+          style: TextStyle(
+            color: colors.onSurface,
             fontSize: 12,
             fontWeight: FontWeight.w700,
             height: 1.25,
@@ -785,8 +843,8 @@ class _TextBlock extends StatelessWidget {
             status,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xFF777777),
+            style: TextStyle(
+              color: colors.onSurfaceVariant,
               fontSize: 9,
               fontWeight: FontWeight.w500,
               height: 1.35,
@@ -819,17 +877,18 @@ class _PreviewBox extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Container(
       width: 36,
       height: 36,
       decoration: BoxDecoration(
-        color: const Color(0xFFE5E5E5),
+        color: colors.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(9),
       ),
       clipBehavior: Clip.antiAlias,
       child: Icon(
         _fileIcon(file.fileType),
-        color: const Color(0xFF8B8B8B),
+        color: colors.onSurfaceVariant,
         size: 25,
       ),
     );
@@ -893,11 +952,12 @@ class _PillButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return TextButton(
       onPressed: onPressed,
       style: TextButton.styleFrom(
-        foregroundColor: const Color(0xFF9B9B9B),
-        backgroundColor: const Color(0xFFE9E9E9),
+        foregroundColor: colors.onSurfaceVariant,
+        backgroundColor: colors.surfaceContainerHighest,
         minimumSize: const Size(80, 22),
         maximumSize: const Size(80, 22),
         padding: const EdgeInsets.symmetric(horizontal: 6),
