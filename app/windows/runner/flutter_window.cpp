@@ -1,9 +1,95 @@
 #include "flutter_window.h"
 
+#include <flutter/method_channel.h>
+#include <flutter/plugin_registrar_windows.h>
+#include <flutter/standard_method_codec.h>
+
+#include <memory>
 #include <optional>
 
 #include "desktop_multi_window/desktop_multi_window_plugin.h"
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+// 仅服务于 Windows 独立发送卡片：对真实顶层 HWND 做圆角裁剪。
+// Flutter 透明背景无法裁掉桌面多窗口插件创建的矩形原生窗口。
+class TanDropSendCardWindowPlugin : public flutter::Plugin {
+ public:
+  static void RegisterWithRegistrar(
+      flutter::PluginRegistrarWindows* registrar) {
+    auto plugin = std::make_unique<TanDropSendCardWindowPlugin>(registrar);
+    auto* plugin_pointer = plugin.get();
+    plugin->channel_ =
+        std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+            registrar->messenger(), "tandrop/windows_send_card_native",
+            &flutter::StandardMethodCodec::GetInstance());
+    plugin->channel_->SetMethodCallHandler(
+        [plugin_pointer](const auto& call, auto result) {
+          plugin_pointer->HandleMethodCall(call, std::move(result));
+        });
+    registrar->AddPlugin(std::move(plugin));
+  }
+
+  explicit TanDropSendCardWindowPlugin(
+      flutter::PluginRegistrarWindows* registrar)
+      : registrar_(registrar) {}
+
+ private:
+  void HandleMethodCall(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+    if (call.method_name() != "setRoundedRegion") {
+      result->NotImplemented();
+      return;
+    }
+
+    int logical_radius = 34;
+    if (const auto* arguments = call.arguments()) {
+      if (const auto* value = std::get_if<int32_t>(arguments)) {
+        logical_radius = *value;
+      } else if (const auto* value64 = std::get_if<int64_t>(arguments)) {
+        logical_radius = static_cast<int>(*value64);
+      }
+    }
+
+    HWND view = registrar_->GetView()->GetNativeWindow();
+    HWND window = ::GetAncestor(view, GA_ROOT);
+    RECT bounds{};
+    if (window == nullptr || !::GetClientRect(window, &bounds)) {
+      result->Error("WINDOW_UNAVAILABLE",
+                    "Unable to locate the send card window.");
+      return;
+    }
+
+    const UINT dpi = ::GetDpiForWindow(window);
+    const int radius = ::MulDiv(logical_radius, dpi, 96);
+    HRGN region = ::CreateRoundRectRgn(
+        0, 0, bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1,
+        radius * 2, radius * 2);
+    if (region == nullptr || !::SetWindowRgn(window, region, TRUE)) {
+      if (region != nullptr) {
+        ::DeleteObject(region);
+      }
+      result->Error("REGION_FAILED", "Unable to apply rounded window region.");
+      return;
+    }
+
+    // SetWindowRgn 成功后由系统接管 region 的生命周期。
+    result->Success();
+  }
+
+  flutter::PluginRegistrarWindows* registrar_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
+};
+
+void RegisterTanDropWindowPlugin(flutter::FlutterEngine* engine) {
+  auto* registrar = engine->GetRegistrarForPlugin(
+      "TanDropSendCardWindowPlugin");
+  TanDropSendCardWindowPlugin::RegisterWithRegistrar(registrar);
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -26,10 +112,12 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterTanDropWindowPlugin(flutter_controller_->engine());
   DesktopMultiWindowSetWindowCreatedCallback([](void *controller) {
     auto *flutter_view_controller =
         reinterpret_cast<flutter::FlutterViewController *>(controller);
     RegisterPlugins(flutter_view_controller->engine());
+    RegisterTanDropWindowPlugin(flutter_view_controller->engine());
   });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   return true;

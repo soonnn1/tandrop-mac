@@ -6,6 +6,7 @@ import 'package:common/model/session_status.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/state/send/send_session_state.dart';
@@ -25,6 +26,9 @@ const _sendCardWindowType = 'windowsSendCard';
 const _sendCardChannel = WindowMethodChannel(
   'tandrop.windows.send_card',
   mode: ChannelMode.unidirectional,
+);
+const _sendCardNativeChannel = MethodChannel(
+  'tandrop/windows_send_card_native',
 );
 
 bool isWindowsSendCardWindowArguments(String arguments) {
@@ -293,6 +297,11 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   @override
   void initState() {
     super.initState();
+    // 子窗口拥有独立 Flutter 引擎，需要单独关闭调试绘制标记。
+    debugPaintSizeEnabled = false;
+    debugPaintBaselinesEnabled = false;
+    debugPaintPointersEnabled = false;
+    debugRepaintRainbowEnabled = false;
     windowManager.addListener(this);
     unawaited(_configureWindow());
     unawaited(_loadSnapshot(refresh: true));
@@ -322,11 +331,12 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
       windowButtonVisibility: false,
     );
     await windowManager.setPreventClose(true);
-    // 去掉独立窗口残留的系统边框，卡片不应显示成普通应用窗口。
-    await windowManager.setAsFrameless();
-    await windowManager.setHasShadow(false);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.waitUntilReadyToShow(options, () async {
+      // 必须先完成尺寸设置，再裁剪真实顶层 HWND。
+      await windowManager.setAsFrameless();
+      await windowManager.setHasShadow(false);
+      await _sendCardNativeChannel.invokeMethod<void>('setRoundedRegion', 34);
       // 等待 Flutter 首帧，不能让原生窗口的默认白底先暴露出来。
       await Future<void>.delayed(const Duration(milliseconds: 120));
       await windowManager.show();
@@ -394,7 +404,7 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
         ),
         scaffoldBackgroundColor: const Color(0xFF2C2A28),
       ),
-      home: ColoredBox(
+      home: Material(
         color: const Color(0xFF2C2A28),
         child: _SendCardPanel(
           snapshot: _snapshot,
