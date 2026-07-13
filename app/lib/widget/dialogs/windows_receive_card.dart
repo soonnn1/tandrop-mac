@@ -1,14 +1,41 @@
 import 'dart:async';
+import 'dart:convert';
+
 import 'package:common/model/dto/file_dto.dart';
 import 'package:common/model/file_type.dart';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/native/open_folder.dart';
 import 'package:localsend_app/widget/dialogs/open_file_dialog.dart';
 import 'package:routerino/routerino.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
+
+const _receiveCardWindowType = 'windowsReceiveCard';
+const _receiveCardChannel = WindowMethodChannel(
+  'tandrop.windows.receive_card',
+  mode: ChannelMode.unidirectional,
+);
+const _receiveCardNativeChannel = MethodChannel(
+  'tandrop/windows_send_card_native',
+);
+
+bool isWindowsReceiveCardWindowArguments(String arguments) {
+  try {
+    final json = jsonDecode(arguments);
+    return json is Map && json['type'] == _receiveCardWindowType;
+  } catch (_) {
+    return false;
+  }
+}
+
+Future<void> runWindowsReceiveCardWindow(String arguments) async {
+  final controller = await WindowController.fromCurrentEngine();
+  runApp(_WindowsReceiveCardWindowApp(controller: controller));
+}
 
 class WindowsReceiveRequest {
   final String sessionId;
@@ -124,6 +151,26 @@ class WindowsReceiveCardController {
   }
 }
 
+class _WindowsReceiveCardWindowManager {
+  _WindowsReceiveCardWindowManager._();
+
+  static WindowController? _controller;
+
+  static Future<void> show() async {
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
+    _controller ??= await WindowController.create(
+      const WindowConfiguration(
+        arguments: '{"type":"windowsReceiveCard"}',
+        hiddenAtLaunch: true,
+      ),
+    );
+  }
+
+  static void markClosed() {
+    _controller = null;
+  }
+}
+
 class WindowsReceiveCardHost extends StatefulWidget {
   final Widget child;
 
@@ -143,7 +190,6 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
   String? _currentFile;
   bool _hasError = false;
   String? _openPath;
-  _WindowSnapshot? _windowSnapshot;
 
   @override
   void initState() {
@@ -153,6 +199,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
     }
     _subscription =
         WindowsReceiveCardController._events.stream.listen(_handleEvent);
+    unawaited(_receiveCardChannel.setMethodCallHandler(_handleWindowCall));
   }
 
   @override
@@ -162,7 +209,32 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
     if (_decision != null && !_decision!.isCompleted) {
       _decision!.complete(false);
     }
+    unawaited(_receiveCardChannel.setMethodCallHandler(null));
     super.dispose();
+  }
+
+  Future<dynamic> _handleWindowCall(MethodCall call) async {
+    switch (call.method) {
+      case 'snapshot':
+        return _snapshot();
+      case 'accept':
+        _accept();
+        return _snapshot();
+      case 'decline':
+        _decline();
+        return _snapshot();
+      case 'open':
+        _openFile();
+        return null;
+      case 'folder':
+        _openFolder();
+        return null;
+      case 'closed':
+        _WindowsReceiveCardWindowManager.markClosed();
+        return null;
+      default:
+        return null;
+    }
   }
 
   void _handleEvent(_WindowsReceiveEvent event) {
@@ -228,34 +300,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
       _hasError = false;
       _openPath = null;
     });
-    unawaited(_enterCardWindow());
-  }
-
-  Widget _buildCard(BuildContext context) {
-    final request = _request;
-    if (request == null) return const SizedBox.shrink();
-
-    return Positioned(
-      top: 18,
-      right: 22,
-      child: Directionality(
-        textDirection: TextDirection.ltr,
-        child: Material(
-          color: Colors.transparent,
-          child: _WindowsReceiveCard(
-            request: request,
-            stage: _stage,
-            progress: _progress,
-            currentFile: _currentFile,
-            hasError: _hasError,
-            onAccept: _accept,
-            onDecline: _decline,
-            onOpen: _openFile,
-            onOpenFolder: _openFolder,
-          ),
-        ),
-      ),
-    );
+    unawaited(_WindowsReceiveCardWindowManager.show());
   }
 
   void _accept() {
@@ -305,7 +350,6 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
       _request = null;
       _decision = null;
     });
-    unawaited(_restoreMainWindow());
   }
 
   void _scheduleHide(Duration delay, String sessionId) {
@@ -318,120 +362,248 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
     });
   }
 
-  Future<void> _enterCardWindow() async {
-    if (_windowSnapshot == null) {
-      final snapshot = _WindowSnapshot(
-        position: await windowManager.getPosition(),
-        size: await windowManager.getSize(),
-        visible: await windowManager.isVisible(),
-        minimized: await windowManager.isMinimized(),
-        maximized: await windowManager.isMaximized(),
-        resizable: await windowManager.isResizable(),
-        alwaysOnTop: await windowManager.isAlwaysOnTop(),
-        skipTaskbar: await windowManager.isSkipTaskbar(),
-      );
-      if (!mounted || _request == null) return;
-      setState(() => _windowSnapshot ??= snapshot);
-    }
-
-    WindowsReceiveCardController.isWindowCardMode = true;
-    const cardWindowSize = Size(724, 266);
-    final display = await ScreenRetriever.instance.getPrimaryDisplay();
-    final visiblePosition = display.visiblePosition ?? Offset.zero;
-    final visibleSize = display.visibleSize ?? display.size;
-    final position = Offset(
-      visiblePosition.dx + visibleSize.width - cardWindowSize.width - 22,
-      visiblePosition.dy + 18,
-    );
-
-    if (await windowManager.isMaximized()) {
-      await windowManager.unmaximize();
-    }
-    if (await windowManager.isMinimized()) {
-      await windowManager.restore();
-    }
-    await windowManager.setMinimumSize(const Size(400, 200));
-    await windowManager.setResizable(false);
-    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
-    await windowManager.setAlwaysOnTop(true);
-    await windowManager.setSkipTaskbar(true);
-    await windowManager.setSize(cardWindowSize);
-    await windowManager.setPosition(position);
-    await windowManager.show();
-    await windowManager.focus();
+  Map<String, dynamic> _snapshot() {
+    final request = _request;
+    return {
+      'visible': request != null,
+      if (request != null) ...{
+        'sessionId': request.sessionId,
+        'senderAlias': request.senderAlias,
+        'destination': request.destination,
+        'files': request.files
+            .map(
+              (file) => {
+                'id': file.id,
+                'fileName': file.fileName,
+                'size': file.size,
+                'fileType': file.fileType.name,
+              },
+            )
+            .toList(),
+        'stage': _stage.name,
+        'progress': _progress,
+        'currentFile': _currentFile,
+        'hasError': _hasError,
+        'openPath': _openPath,
+      },
+    };
   }
 
-  Future<void> _restoreMainWindow() async {
-    final snapshot = _windowSnapshot;
-    if (snapshot == null) return;
-    _windowSnapshot = null;
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
 
-    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-    await windowManager.setMinimumSize(const Size(400, 500));
-    await windowManager.setResizable(snapshot.resizable);
-    await windowManager.setSize(snapshot.size);
-    await windowManager.setPosition(snapshot.position);
-    if (snapshot.maximized) {
-      await windowManager.maximize();
+class _WindowsReceiveCardWindowApp extends StatefulWidget {
+  final WindowController controller;
+
+  const _WindowsReceiveCardWindowApp({required this.controller});
+
+  @override
+  State<_WindowsReceiveCardWindowApp> createState() =>
+      _WindowsReceiveCardWindowAppState();
+}
+
+class _WindowsReceiveCardWindowAppState
+    extends State<_WindowsReceiveCardWindowApp> with WindowListener {
+  static const _windowSize = Size(680, 230);
+
+  Timer? _pollTimer;
+  WindowsReceiveRequest? _request;
+  _ReceiveCardStage _stage = _ReceiveCardStage.waiting;
+  double _progress = 0;
+  String? _currentFile;
+  bool _hasError = false;
+  bool _closing = false;
+  Offset? _visiblePosition;
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+    unawaited(_initializeWindow());
+  }
+
+  Future<void> _initializeWindow() async {
+    // 先获取完整接收请求再显示窗口，避免默认空白背景闪现。
+    while (mounted && _request == null) {
+      await _loadSnapshot();
+      if (_request == null) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      }
     }
-    await windowManager.setAlwaysOnTop(snapshot.alwaysOnTop);
-    await windowManager.setSkipTaskbar(snapshot.skipTaskbar);
-    if (!snapshot.visible) {
-      await windowManager.hide();
-    } else if (snapshot.minimized) {
-      await windowManager.minimize();
-    } else {
+    if (!mounted) return;
+    await _configureWindow();
+    _pollTimer = Timer.periodic(
+      const Duration(milliseconds: 180),
+      (_) => unawaited(_loadSnapshot()),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  Future<void> _configureWindow() async {
+    await windowManager.ensureInitialized();
+    final display = await ScreenRetriever.instance.getPrimaryDisplay();
+    final visibleOrigin = display.visiblePosition ?? Offset.zero;
+    final visibleSize = display.visibleSize ?? display.size;
+    final target = Offset(
+      visibleOrigin.dx + visibleSize.width - _windowSize.width - 22,
+      visibleOrigin.dy + 18,
+    );
+    final hidden = Offset(target.dx, target.dy - _windowSize.height - 24);
+    _visiblePosition = target;
+
+    const options = WindowOptions(
+      size: _windowSize,
+      backgroundColor: Color(0xFF2A2117),
+      skipTaskbar: true,
+      titleBarStyle: TitleBarStyle.hidden,
+      windowButtonVisibility: false,
+    );
+    await windowManager.setPreventClose(true);
+    await windowManager.setAlwaysOnTop(true);
+    await windowManager.waitUntilReadyToShow(options, () async {
+      await windowManager.setAsFrameless();
+      await windowManager.setResizable(false);
+      await windowManager.setHasShadow(false);
+      await windowManager.setPosition(hidden);
+      await _receiveCardNativeChannel.invokeMethod<void>(
+          'setRoundedRegion', 30);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       await windowManager.show();
+      await _animateWindow(hidden, target, const Duration(milliseconds: 240));
+    });
+  }
+
+  Future<void> _loadSnapshot() async {
+    if (_closing) return;
+    try {
+      final result = await _receiveCardChannel
+          .invokeMethod<Map<dynamic, dynamic>>('snapshot');
+      if (!mounted || result == null) return;
+      final data = result.cast<String, dynamic>();
+      if (data['visible'] != true) {
+        await _closeAnimated();
+        return;
+      }
+      final files = (data['files'] as List).cast<Map>().map((raw) {
+        final file = raw.cast<String, dynamic>();
+        final typeName = file['fileType'] as String?;
+        final fileType = FileType.values.firstWhere(
+          (type) => type.name == typeName,
+          orElse: () => FileType.other,
+        );
+        return FileDto(
+          id: file['id'] as String,
+          fileName: file['fileName'] as String,
+          size: file['size'] as int,
+          fileType: fileType,
+          hash: null,
+          preview: null,
+          legacy: false,
+          metadata: null,
+        );
+      }).toList();
+      final stageName = data['stage'] as String?;
+      setState(() {
+        _request = WindowsReceiveRequest(
+          sessionId: data['sessionId'] as String,
+          senderAlias: data['senderAlias'] as String,
+          files: files,
+          destination: data['destination'] as String,
+        );
+        _stage = _ReceiveCardStage.values.firstWhere(
+          (stage) => stage.name == stageName,
+          orElse: () => _ReceiveCardStage.waiting,
+        );
+        _progress = (data['progress'] as num?)?.toDouble() ?? 0;
+        _currentFile = data['currentFile'] as String?;
+        _hasError = data['hasError'] as bool? ?? false;
+      });
+    } catch (_) {
+      // 主引擎初始化通信期间短暂失败，下一次轮询会重试。
     }
-    WindowsReceiveCardController.isWindowCardMode = false;
+  }
+
+  Future<void> _invokeAction(String method) async {
+    await _receiveCardChannel.invokeMethod(method);
+    await _loadSnapshot();
+  }
+
+  Future<void> _closeAnimated() async {
+    if (_closing) return;
+    _closing = true;
+    _pollTimer?.cancel();
+    final start = await windowManager.getPosition();
+    final target = Offset(
+      start.dx,
+      (_visiblePosition?.dy ?? start.dy) - _windowSize.height - 24,
+    );
+    await _animateWindow(start, target, const Duration(milliseconds: 190));
+    try {
+      await _receiveCardChannel.invokeMethod('closed');
+    } finally {
+      await windowManager.setPreventClose(false);
+      await windowManager.close();
+    }
+  }
+
+  Future<void> _animateWindow(
+    Offset begin,
+    Offset end,
+    Duration duration,
+  ) async {
+    const frames = 15;
+    final frameDelay = Duration(
+      microseconds: duration.inMicroseconds ~/ frames,
+    );
+    for (var frame = 1; frame <= frames; frame++) {
+      final t = Curves.easeOutCubic.transform(frame / frames);
+      await windowManager.setPosition(Offset.lerp(begin, end, t)!);
+      await Future<void>.delayed(frameDelay);
+    }
+  }
+
+  @override
+  Future<void> onWindowClose() async {
+    if (!_closing) {
+      await _invokeAction('decline');
+      await _closeAnimated();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final mainWindowSize = _windowSnapshot?.size;
-    return Stack(
-      children: [
-        Offstage(
-          offstage: _request != null,
-          child: mainWindowSize == null
-              ? widget.child
-              : OverflowBox(
-                  alignment: Alignment.topLeft,
-                  minWidth: mainWindowSize.width,
-                  maxWidth: mainWindowSize.width,
-                  minHeight: mainWindowSize.height,
-                  maxHeight: mainWindowSize.height,
-                  child: widget.child,
+    final request = _request;
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark(useMaterial3: true),
+      home: Material(
+        color: const Color(0xFF2A2117),
+        child: request == null
+            ? const SizedBox.expand()
+            : Directionality(
+                textDirection: TextDirection.ltr,
+                child: _WindowsReceiveCard(
+                  request: request,
+                  stage: _stage,
+                  progress: _progress,
+                  currentFile: _currentFile,
+                  hasError: _hasError,
+                  onAccept: () => unawaited(_invokeAction('accept')),
+                  onDecline: () => unawaited(_invokeAction('decline')),
+                  onOpen: () => unawaited(_invokeAction('open')),
+                  onOpenFolder: () => unawaited(_invokeAction('folder')),
                 ),
-        ),
-        if (_request != null)
-          const Positioned.fill(child: ColoredBox(color: Color(0xFF151413))),
-        if (_request != null) _buildCard(context),
-      ],
+              ),
+      ),
     );
   }
-}
-
-class _WindowSnapshot {
-  final Offset position;
-  final Size size;
-  final bool visible;
-  final bool minimized;
-  final bool maximized;
-  final bool resizable;
-  final bool alwaysOnTop;
-  final bool skipTaskbar;
-
-  const _WindowSnapshot({
-    required this.position,
-    required this.size,
-    required this.visible,
-    required this.minimized,
-    required this.maximized,
-    required this.resizable,
-    required this.alwaysOnTop,
-    required this.skipTaskbar,
-  });
 }
 
 enum _ReceiveCardStage {
@@ -469,81 +641,66 @@ class _WindowsReceiveCard extends StatelessWidget {
     final firstFile = request.firstFile;
     final progressColor = hasError ? Colors.redAccent : const Color(0xFF0A84FF);
 
-    return TweenAnimationBuilder<Offset>(
-      tween: Tween(begin: const Offset(28, 0), end: Offset.zero),
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      builder: (context, offset, child) {
-        return Transform.translate(
-          offset: offset,
-          child: AnimatedOpacity(
-            duration: const Duration(milliseconds: 160),
-            opacity: 1,
-            child: child,
+    return Container(
+      width: 680,
+      constraints: const BoxConstraints(minHeight: 202, maxHeight: 230),
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(30),
+        border: Border.all(color: Colors.white.withOpacity(0.16)),
+        color: const Color(0xE62A2117),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.28),
+            blurRadius: 28,
+            offset: const Offset(0, 14),
           ),
-        );
-      },
-      child: Container(
-        width: 680,
-        constraints: const BoxConstraints(minHeight: 202, maxHeight: 230),
-        padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(30),
-          border: Border.all(color: Colors.white.withOpacity(0.16)),
-          color: const Color(0xE62A2117),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.28),
-              blurRadius: 28,
-              offset: const Offset(0, 14),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _AvatarBadge(stage: stage),
-                const SizedBox(width: 18),
-                Expanded(
-                    child: _TextBlock(
-                        request: request,
-                        currentFile: currentFile,
-                        stage: stage)),
-                const SizedBox(width: 16),
-                _PreviewBox(file: firstFile),
-              ],
-            ),
-            const SizedBox(height: 18),
-            Divider(height: 1, color: Colors.white.withOpacity(0.16)),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(999),
-                    child: LinearProgressIndicator(
-                      minHeight: 14,
-                      value: stage == _ReceiveCardStage.waiting ? 0 : progress,
-                      color: progressColor,
-                      backgroundColor: Colors.white.withOpacity(0.12),
-                    ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _AvatarBadge(stage: stage),
+              const SizedBox(width: 18),
+              Expanded(
+                  child: _TextBlock(
+                      request: request,
+                      currentFile: currentFile,
+                      stage: stage)),
+              const SizedBox(width: 16),
+              _PreviewBox(file: firstFile),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Divider(height: 1, color: Colors.white.withOpacity(0.16)),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    minHeight: 14,
+                    value: stage == _ReceiveCardStage.waiting ? 0 : progress,
+                    color: progressColor,
+                    backgroundColor: Colors.white.withOpacity(0.12),
                   ),
                 ),
-                const SizedBox(width: 16),
-                _TrailingAction(
-                  stage: stage,
-                  onAccept: onAccept,
-                  onDecline: onDecline,
-                  onOpen: onOpen,
-                  onOpenFolder: onOpenFolder,
-                ),
-              ],
-            ),
-          ],
-        ),
+              ),
+              const SizedBox(width: 16),
+              _TrailingAction(
+                stage: stage,
+                onAccept: onAccept,
+                onDecline: onDecline,
+                onOpen: onOpen,
+                onOpenFolder: onOpenFolder,
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

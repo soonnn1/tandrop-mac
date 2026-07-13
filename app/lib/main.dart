@@ -34,6 +34,10 @@ Future<void> main(List<String> args) async {
   if (defaultTargetPlatform == TargetPlatform.windows) {
     await windowManager.ensureInitialized();
     final controller = await WindowController.fromCurrentEngine();
+    if (isWindowsReceiveCardWindowArguments(controller.arguments)) {
+      await runWindowsReceiveCardWindow(controller.arguments);
+      return;
+    }
     if (isWindowsSendCardWindowArguments(controller.arguments)) {
       await runWindowsSendCardWindow(controller.arguments);
       return;
@@ -112,7 +116,7 @@ class LocalSendApp extends StatelessWidget {
                 break;
             }
           },
-          // Windows 接收卡片会临时接管窗口；其他平台保持原 Widget 树不变。
+          // Windows 接收卡片由独立子窗口展示，主窗口只保留业务桥接。
           child: defaultTargetPlatform == TargetPlatform.windows
               ? WindowsReceiveCardHost(child: bridgedApp)
               : bridgedApp,

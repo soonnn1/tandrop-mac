@@ -930,23 +930,25 @@ class _DeviceRow extends StatefulWidget {
 }
 
 class _DeviceRowState extends State<_DeviceRow> with Refena {
+  String? _activeSessionId;
   SessionStatus? _terminalStatus;
+  Timer? _terminalTimer;
+
+  @override
+  void dispose() {
+    _terminalTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final sessions = ref.watch(sendProvider);
-    SendSessionState? session;
-    for (final candidate in sessions.values) {
-      if (candidate.target.fingerprint == widget.device.fingerprint) {
-        session = candidate;
-        break;
-      }
-    }
+    final session =
+        _activeSessionId == null ? null : sessions[_activeSessionId];
     final sessionStatus = session?.status;
     final isTransferring = sessionStatus == SessionStatus.waiting ||
         sessionStatus == SessionStatus.sending;
-    final terminalStatus =
-        isTransferring ? null : sessionStatus ?? _terminalStatus;
+    final terminalStatus = isTransferring ? null : _terminalStatus;
     final progressNotifier = ref.watch(progressProvider);
     final progress = isTransferring && session != null
         ? _sendProgress(session, progressNotifier)
@@ -1012,22 +1014,29 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
                 context,
               ).textTheme.bodySmall?.copyWith(color: colors.muted),
             )
-          else if (progress != null)
-            const SizedBox(width: 24)
-          else if (terminalStatus == SessionStatus.finished)
-            const Icon(Icons.check_circle_rounded, color: Colors.green)
-          else if (terminalStatus != null)
-            const Icon(Icons.cancel_rounded, color: Colors.red)
-          else
+          else ...[
+            if (terminalStatus != null) ...[
+              Icon(
+                terminalStatus == SessionStatus.finished
+                    ? Icons.check_circle_rounded
+                    : Icons.cancel_rounded,
+                color: terminalStatus == SessionStatus.finished
+                    ? Colors.green
+                    : Colors.red,
+              ),
+              const SizedBox(width: 8),
+            ],
             OutlinedButton(
-              onPressed: widget.enabled
-                  ? () {
-                      unawaited(_sendToDevice(widget.device));
-                    }
-                  : null,
+              onPressed: isTransferring
+                  ? _cancelTransfer
+                  : widget.enabled
+                      ? () => unawaited(_sendToDevice(widget.device))
+                      : null,
               style: OutlinedButton.styleFrom(
-                foregroundColor: colors.primary,
-                side: BorderSide(color: colors.primary),
+                foregroundColor: isTransferring ? Colors.red : colors.primary,
+                side: BorderSide(
+                  color: isTransferring ? Colors.red : colors.primary,
+                ),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 10,
@@ -1036,8 +1045,9 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
                   borderRadius: BorderRadius.circular(8),
                 ),
               ),
-              child: const Text('发送'),
+              child: Text(isTransferring ? '终止' : '发送'),
             ),
+          ],
         ],
       ),
     );
@@ -1050,11 +1060,55 @@ class _DeviceRowState extends State<_DeviceRow> with Refena {
           .showSnackBar(const SnackBar(content: Text('请先在左侧选择要发送的文件。')));
       return;
     }
-    setState(() => _terminalStatus = null);
-    final result = await ref
-        .notifier(sendProvider)
-        .startSession(target: target, files: files, background: true);
-    if (mounted) setState(() => _terminalStatus = result);
+    _terminalTimer?.cancel();
+    String? createdSessionId;
+    setState(() {
+      _terminalStatus = null;
+      _activeSessionId = null;
+    });
+    final result = await ref.notifier(sendProvider).startSession(
+          target: target,
+          files: files,
+          background: true,
+          onSessionCreated: (sessionId) {
+            createdSessionId = sessionId;
+            if (mounted) {
+              setState(() => _activeSessionId = sessionId);
+            }
+          },
+        );
+    if (result == SessionStatus.finished) {
+      ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction());
+    }
+    if (!mounted || _activeSessionId != createdSessionId) return;
+    final sessionId = createdSessionId;
+    if (sessionId != null) {
+      ref.notifier(sendProvider).closeSession(sessionId);
+    }
+    setState(() {
+      _activeSessionId = null;
+      _terminalStatus = result;
+    });
+    _scheduleTerminalReset();
+  }
+
+  void _cancelTransfer() {
+    final sessionId = _activeSessionId;
+    if (sessionId == null) return;
+    // 取消真实发送会话，同时通知接收端中止。
+    ref.notifier(sendProvider).cancelSession(sessionId);
+    setState(() {
+      _activeSessionId = null;
+      _terminalStatus = SessionStatus.canceledBySender;
+    });
+    _scheduleTerminalReset();
+  }
+
+  void _scheduleTerminalReset() {
+    _terminalTimer?.cancel();
+    _terminalTimer = Timer(const Duration(seconds: 1), () {
+      if (mounted) setState(() => _terminalStatus = null);
+    });
   }
 }
 

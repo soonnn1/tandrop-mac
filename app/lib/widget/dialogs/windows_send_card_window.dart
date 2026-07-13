@@ -150,15 +150,18 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
             <String, dynamic>{};
         return _startSend(args['ip'] as String?);
       case 'cancel':
-        final sessionId = _sessionId;
-        if (sessionId != null) {
+        final args = (call.arguments as Map?)?.cast<String, dynamic>() ??
+            <String, dynamic>{};
+        final sessionId = args['sessionId'] as String?;
+        if (sessionId != null && sessionId == _sessionId) {
           ref.notifier(sendProvider).cancelSession(sessionId);
+          _terminalStatus = SessionStatus.canceledBySender;
+          _scheduleTerminalReset();
         }
         return _snapshot();
       case 'downloadQr':
         return _createDownloadQr();
       case 'close':
-        _resetSession();
         try {
           await _restoreServerAfterQr();
         } catch (_) {
@@ -182,6 +185,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
     _terminalStatus = null;
     _resetTimer?.cancel();
     final created = Completer<String>();
+    String? startedSessionId;
     unawaited(
       ref
           .notifier(sendProvider)
@@ -190,6 +194,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
             files: files,
             background: true,
             onSessionCreated: (sessionId) {
+              startedSessionId = sessionId;
               _sessionId = sessionId;
               if (!created.isCompleted) {
                 created.complete(sessionId);
@@ -197,8 +202,9 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
             },
           )
           .then((status) {
+        if (_sessionId != startedSessionId) return;
         _terminalStatus = status;
-        _scheduleResetIfFinished(status);
+        _scheduleTerminalReset();
       }),
     );
     await created.future.timeout(
@@ -208,10 +214,9 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
     return _snapshot();
   }
 
-  void _scheduleResetIfFinished(SessionStatus status) {
-    if (status != SessionStatus.finished) return;
+  void _scheduleTerminalReset() {
     _resetTimer?.cancel();
-    _resetTimer = Timer(const Duration(milliseconds: 1200), () {
+    _resetTimer = Timer(const Duration(seconds: 1), () {
       _resetSession();
       unawaited(
           context.global.dispatchAsync(StartSmartScan(forceLegacy: true)));
@@ -489,13 +494,16 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
     });
   }
 
-  Future<void> _cancelOrClose() async {
+  Future<void> _terminateTransfer() async {
     final session = (_snapshot?['session'] as Map?)?.cast<String, dynamic>();
-    final status = session?['status'] as String?;
-    if (status == 'waiting' || status == 'sending') {
-      await _sendCardChannel.invokeMethod('cancel');
-    }
-    await _close();
+    final sessionId = session?['id'] as String?;
+    if (sessionId == null) return;
+    final result = await _sendCardChannel.invokeMethod<Map<dynamic, dynamic>>(
+      'cancel',
+      {'sessionId': sessionId},
+    );
+    if (!mounted || result == null) return;
+    setState(() => _snapshot = result.cast<String, dynamic>());
   }
 
   Future<void> _close() async {
@@ -539,7 +547,8 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
           onSend: (ip) => unawaited(_startSend(ip)),
           onQr: () => unawaited(_showQr()),
           onHideQr: _hideQr,
-          onClose: () => unawaited(_cancelOrClose()),
+          onTerminate: () => unawaited(_terminateTransfer()),
+          onClose: () => unawaited(_close()),
         ),
       ),
     );
@@ -557,6 +566,7 @@ class _SendCardPanel extends StatelessWidget {
   final ValueChanged<String> onSend;
   final VoidCallback onQr;
   final VoidCallback onHideQr;
+  final VoidCallback onTerminate;
   final VoidCallback onClose;
 
   const _SendCardPanel({
@@ -570,6 +580,7 @@ class _SendCardPanel extends StatelessWidget {
     required this.onSend,
     required this.onQr,
     required this.onHideQr,
+    required this.onTerminate,
     required this.onClose,
   });
 
@@ -589,6 +600,8 @@ class _SendCardPanel extends StatelessWidget {
     final totalSize = files['totalSize'] as int? ?? 0;
     final firstName = files['firstName'] as String? ?? '未选择文件';
     final isIdle = status == null;
+    final isTransferring = status == SessionStatus.waiting.name ||
+        status == SessionStatus.sending.name;
     final showingQr = qrLoading || qrUrl != null || qrError != null;
 
     return Container(
@@ -693,11 +706,19 @@ class _SendCardPanel extends StatelessWidget {
               ),
               const Spacer(),
               FilledButton(
-                onPressed: onClose,
+                onPressed: isTransferring ? onTerminate : onClose,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF56524F),
+                  backgroundColor: isTransferring
+                      ? Colors.red.shade700
+                      : const Color(0xFF56524F),
                 ),
-                child: Text(isIdle ? '取消' : '关闭'),
+                child: Text(
+                  isTransferring
+                      ? '终止'
+                      : isIdle
+                          ? '取消'
+                          : '关闭',
+                ),
               ),
             ],
           ),
