@@ -587,9 +587,8 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
         colorScheme: colorScheme,
         scaffoldBackgroundColor: colorScheme.surface,
       ),
-      home: ClipRRect(
-        borderRadius: BorderRadius.circular(_sendCardCornerRadius),
-        clipBehavior: Clip.antiAlias,
+      home: ColoredBox(
+        color: colorScheme.surface,
         child: Material(
           color: colorScheme.surface,
           child: _SendCardPanel(
@@ -662,126 +661,133 @@ class _SendCardPanel extends StatelessWidget {
         status == SessionStatus.sending.name;
     final showingQr = qrLoading || qrUrl != null || qrError != null;
 
-    return Container(
-      width: 720,
-      height: 520,
-      padding: const EdgeInsets.fromLTRB(34, 26, 34, 28),
-      decoration: BoxDecoration(
-        color: colors.surface,
-        borderRadius: BorderRadius.circular(_sendCardCornerRadius),
-        border: Border.all(color: colors.outlineVariant, width: 1.4),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              IconButton(
-                onPressed: onClose,
-                icon: Icon(Icons.close_rounded, color: colors.onSurfaceVariant),
-              ),
-              CircleAvatar(
-                radius: 39,
-                backgroundColor: Color(0xFF35699B),
-                child: Icon(
-                  Icons.person_rounded,
-                  size: 54,
-                  color: colors.surface,
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onPanStart: (_) => unawaited(windowManager.startDragging()),
+      child: Container(
+        width: 720,
+        height: 520,
+        padding: const EdgeInsets.fromLTRB(34, 26, 34, 28),
+        decoration: BoxDecoration(
+          color: colors.surface,
+          borderRadius: BorderRadius.circular(_sendCardCornerRadius),
+          border: Border.all(color: colors.outlineVariant, width: 1.4),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                IconButton(
+                  onPressed: onClose,
+                  icon:
+                      Icon(Icons.close_rounded, color: colors.onSurfaceVariant),
                 ),
-              ),
-              const SizedBox(width: 22),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'TanDrop',
-                      style: TextStyle(
-                        color: colors.onSurface,
-                        fontSize: 34,
-                        fontWeight: FontWeight.w800,
+                CircleAvatar(
+                  radius: 39,
+                  backgroundColor: Color(0xFF35699B),
+                  child: Icon(
+                    Icons.person_rounded,
+                    size: 54,
+                    color: colors.surface,
+                  ),
+                ),
+                const SizedBox(width: 22),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'TanDrop',
+                        style: TextStyle(
+                          color: colors.onSurface,
+                          fontSize: 34,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
-                    ),
-                    Text(
-                      '准备发送 $count 个项目',
-                      style: TextStyle(
-                        color: colors.onSurfaceVariant,
-                        fontSize: 23,
+                      Text(
+                        '准备发送 $count 个项目',
+                        style: TextStyle(
+                          color: colors.onSurfaceVariant,
+                          fontSize: 23,
+                        ),
                       ),
-                    ),
-                    Text(
-                      '$firstName · ${totalSize.asReadableFileSize}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: colors.onSurfaceVariant.withOpacity(0.8),
-                        fontSize: 17,
+                      Text(
+                        '$firstName · ${totalSize.asReadableFileSize}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colors.onSurfaceVariant.withOpacity(0.8),
+                          fontSize: 17,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              SizedBox(
-                width: 80,
-                height: 80,
-                child: _FilePreview(files: files),
-              ),
-            ],
-          ),
-          Divider(color: colors.outlineVariant, height: 34),
-          Expanded(
-            child: showingQr
-                ? _QrDownloadView(
-                    url: qrUrl,
-                    pin: qrPin,
-                    error: qrError,
-                    loading: qrLoading,
-                  )
-                : isIdle
-                    ? _DevicePicker(
-                        devices: devices,
-                        connectionError: connectionError,
-                        onSend: onSend,
-                      )
-                    : _TransferStatus(session: session),
-          ),
-          Divider(color: colors.outlineVariant, height: 30),
-          Row(
-            children: [
-              OutlinedButton.icon(
-                onPressed: isIdle && !showingQr ? onRefresh : null,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('刷新设备'),
-              ),
-              const SizedBox(width: 10),
-              OutlinedButton.icon(
-                onPressed: isIdle ? (showingQr ? onHideQr : onQr) : null,
-                icon: Icon(
-                  showingQr ? Icons.arrow_back_rounded : Icons.qr_code_rounded,
+                SizedBox(
+                  width: 80,
+                  height: 80,
+                  child: _FilePreview(files: files),
                 ),
-                label: Text(showingQr ? '返回设备' : '二维码'),
-              ),
-              const Spacer(),
-              FilledButton(
-                onPressed: isTransferring ? onTerminate : onClose,
-                style: FilledButton.styleFrom(
-                  backgroundColor: isTransferring
-                      ? Colors.red.shade700
-                      : colors.surfaceContainerHighest,
-                  foregroundColor:
-                      isTransferring ? Colors.white : colors.onSurfaceVariant,
+              ],
+            ),
+            Divider(color: colors.outlineVariant, height: 34),
+            Expanded(
+              child: showingQr
+                  ? _QrDownloadView(
+                      url: qrUrl,
+                      pin: qrPin,
+                      error: qrError,
+                      loading: qrLoading,
+                    )
+                  : isIdle
+                      ? _DevicePicker(
+                          devices: devices,
+                          connectionError: connectionError,
+                          onSend: onSend,
+                        )
+                      : _TransferStatus(session: session),
+            ),
+            Divider(color: colors.outlineVariant, height: 30),
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: isIdle && !showingQr ? onRefresh : null,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('刷新设备'),
                 ),
-                child: Text(
-                  isTransferring
-                      ? '终止'
-                      : isIdle
-                          ? '取消'
-                          : '关闭',
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: isIdle ? (showingQr ? onHideQr : onQr) : null,
+                  icon: Icon(
+                    showingQr
+                        ? Icons.arrow_back_rounded
+                        : Icons.qr_code_rounded,
+                  ),
+                  label: Text(showingQr ? '返回设备' : '二维码'),
                 ),
-              ),
-            ],
-          ),
-        ],
+                const Spacer(),
+                FilledButton(
+                  onPressed: isTransferring ? onTerminate : onClose,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: isTransferring
+                        ? Colors.red.shade700
+                        : colors.surfaceContainerHighest,
+                    foregroundColor:
+                        isTransferring ? Colors.white : colors.onSurfaceVariant,
+                  ),
+                  child: Text(
+                    isTransferring
+                        ? '终止'
+                        : isIdle
+                            ? '取消'
+                            : '关闭',
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
