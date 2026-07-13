@@ -15,6 +15,7 @@ import 'package:localsend_app/pages/tandrop_windows_home_page.dart';
 import 'package:localsend_app/provider/app_arguments_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/util/native/cross_file_converters.dart';
+import 'package:localsend_app/util/native/tray_helper.dart';
 import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:localsend_app/widget/responsive_builder.dart';
 import 'package:refena_flutter/refena_flutter.dart';
@@ -79,6 +80,10 @@ class _HomePageState extends State<HomePage> with Refena {
 
       if (_isWindowsFileShare && mounted) {
         await WindowsSendCard.open(context);
+        if (!mounted) return;
+        // 首次由“发送到”启动时，卡片关闭后回到托盘；以后从托盘打开仍是主界面。
+        setState(() => _isWindowsFileShare = false);
+        await hideToTray();
       }
     });
   }

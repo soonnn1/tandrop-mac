@@ -550,21 +550,34 @@ class _ContextMenuToggleState extends State<_ContextMenuToggle> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = _TanDropColors.of(context);
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      const Text('显示在右键菜单', style: TextStyle(fontSize: 12)),
+      Text(
+        '显示在右键菜单',
+        style: TextStyle(
+          color: colors.text,
+          fontSize: 12,
+          decoration: TextDecoration.none,
+        ),
+      ),
       Switch.adaptive(
         value: _enabled ?? false,
         onChanged: _enabled == null || _updating
             ? null
             : (value) async {
-                setState(() => _updating = true);
+                final previousValue = _enabled!;
+                // 先更新界面，PowerShell 在后台创建快捷方式，避免开关卡顿。
+                setState(() {
+                  _enabled = value;
+                  _updating = true;
+                });
                 final success = value
                     ? await enableContextMenu()
                     : await disableContextMenu();
                 if (!context.mounted) return;
                 setState(() {
                   _updating = false;
-                  if (success) _enabled = value;
+                  if (!success) _enabled = previousValue;
                 });
                 if (!success) {
                   ScaffoldMessenger.of(context).showSnackBar(

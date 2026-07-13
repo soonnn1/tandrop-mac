@@ -45,6 +45,7 @@ import 'package:localsend_app/util/native/tray_helper.dart';
 import 'package:localsend_app/util/simple_server.dart';
 import 'package:localsend_app/widget/dialogs/open_file_dialog.dart';
 import 'package:localsend_app/widget/dialogs/windows_receive_card.dart';
+import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:logging/logging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:routerino/routerino.dart';
@@ -914,11 +915,15 @@ class ReceiveController {
   }) async {
     final senderToken = request.uri.queryParameters['token'];
     if (senderToken == showToken && checkPlatformIsDesktop()) {
-      // ignore: unawaited_futures
-      showFromTray().catchError((e) {
-        // don't wait for it
-        _logger.severe('Failed to show from tray', e);
-      });
+      final isWindows = checkPlatform([TargetPlatform.windows]);
+      final wasVisible = isWindows ? await windowManager.isVisible() : true;
+      if (!isWindows) {
+        // ignore: unawaited_futures
+        showFromTray().catchError((e) {
+          // don't wait for it
+          _logger.severe('Failed to show from tray', e);
+        });
+      }
 
       // ignore: unawaited_futures
       request.readAsString().then((body) async {
@@ -933,9 +938,23 @@ class ReceiveController {
             .redux(selectedSendingFilesProvider)
             .dispatchAsyncTakeResult(LoadSelectionFromArgsAction(args));
         if (filesAdded) {
-          server.ref
-              .redux(homePageControllerProvider)
-              .dispatch(ChangeTabAction(HomeTab.send));
+          if (isWindows) {
+            // 单实例已运行时，文件分享直接显示发送卡片，不进入仪表盘。
+            final cardContext = Routerino.context;
+            if (!cardContext.mounted) return;
+            final cardClosed = WindowsSendCard.open(cardContext);
+            // 先将卡片路由放入 Navigator，再显示窗口，避免仪表盘闪现。
+            await Future<void>.delayed(Duration.zero);
+            await showFromTray();
+            await cardClosed;
+            if (!wasVisible) {
+              await hideToTray();
+            }
+          } else {
+            server.ref
+                .redux(homePageControllerProvider)
+                .dispatch(ChangeTabAction(HomeTab.send));
+          }
         }
       });
 

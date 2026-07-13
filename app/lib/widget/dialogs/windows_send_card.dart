@@ -22,16 +22,28 @@ class WindowsSendCard extends StatefulWidget {
 
   const WindowsSendCard({this.suggestedTarget, super.key});
 
-  static Future<void> open(BuildContext context, {Device? suggestedTarget}) {
-    return showGeneralDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      barrierLabel: 'Windows send card',
-      barrierColor: Colors.black54,
-      pageBuilder: (_, __, ___) => Center(
-        child: WindowsSendCard(suggestedTarget: suggestedTarget),
-      ),
-    );
+  static bool _isOpen = false;
+
+  static Future<void> open(
+    BuildContext context, {
+    Device? suggestedTarget,
+  }) async {
+    if (_isOpen) return;
+    _isOpen = true;
+    try {
+      await showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierLabel: 'Windows send card',
+        // 分享启动时完全遮住仪表盘，用户只看到发送卡片。
+        barrierColor: const Color(0xFF151413),
+        pageBuilder: (_, __, ___) => Center(
+          child: WindowsSendCard(suggestedTarget: suggestedTarget),
+        ),
+      );
+    } finally {
+      _isOpen = false;
+    }
   }
 
   @override
