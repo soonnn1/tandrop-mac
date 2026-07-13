@@ -550,43 +550,35 @@ class _ContextMenuToggleState extends State<_ContextMenuToggle> {
 
   @override
   Widget build(BuildContext context) {
-    final colors = _TanDropColors.of(context);
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      Text(
-        '显示在右键菜单',
-        style: TextStyle(
-          color: colors.text,
-          fontSize: 12,
-          decoration: TextDecoration.none,
-        ),
-      ),
-      Switch.adaptive(
-        value: _enabled ?? false,
-        onChanged: _enabled == null || _updating
-            ? null
-            : (value) async {
-                final previousValue = _enabled!;
-                // 先更新界面，PowerShell 在后台创建快捷方式，避免开关卡顿。
-                setState(() {
-                  _enabled = value;
-                  _updating = true;
-                });
-                final success = value
-                    ? await enableContextMenu()
-                    : await disableContextMenu();
-                if (!context.mounted) return;
-                setState(() {
-                  _updating = false;
-                  if (!success) _enabled = previousValue;
-                });
-                if (!success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('更新 Windows 右键菜单失败。')),
-                  );
-                }
-              },
-      ),
-    ]);
+    return _InlineSwitch(
+      label: _updating ? '右键菜单…' : '右键菜单',
+      width: 132,
+      value: _enabled ?? false,
+      onChanged: _enabled == null || _updating
+          ? null
+          : (value) => unawaited(_toggle(context, value)),
+    );
+  }
+
+  Future<void> _toggle(BuildContext context, bool value) async {
+    final previousValue = _enabled!;
+    // 先更新界面，PowerShell 在后台创建快捷方式，避免开关卡顿。
+    setState(() {
+      _enabled = value;
+      _updating = true;
+    });
+    final success =
+        value ? await enableContextMenu() : await disableContextMenu();
+    if (!context.mounted) return;
+    setState(() {
+      _updating = false;
+      if (!success) _enabled = previousValue;
+    });
+    if (!success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('更新 Windows 右键菜单失败。')),
+      );
+    }
   }
 }
 

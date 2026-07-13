@@ -7,6 +7,7 @@ import 'package:localsend_app/provider/window_dimensions_provider.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
 import 'package:localsend_app/widget/dialogs/windows_receive_card.dart';
+import 'package:localsend_app/widget/dialogs/windows_send_card.dart';
 import 'package:logging/logging.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:window_manager/window_manager.dart';
@@ -81,21 +82,21 @@ class _WindowWatcherState extends State<WindowWatcher>
 
   @override
   Future<void> onWindowMoved() async {
-    if (WindowsReceiveCardController.isWindowCardMode) return;
+    if (_isWindowsCardMode) return;
     final windowOffset = await windowManager.getPosition();
     await _dimensionsController?.storePosition(windowOffset: windowOffset);
   }
 
   @override
   Future<void> onWindowResized() async {
-    if (WindowsReceiveCardController.isWindowCardMode) return;
+    if (_isWindowsCardMode) return;
     final windowSize = await windowManager.getSize();
     await _dimensionsController?.storeSize(windowSize: windowSize);
   }
 
   @override
   Future<void> onWindowClose() async {
-    if (!WindowsReceiveCardController.isWindowCardMode) {
+    if (!_isWindowsCardMode) {
       final windowOffset = await windowManager.getPosition();
       final windowSize = await windowManager.getSize();
       await _dimensionsController?.storeDimensions(
@@ -133,4 +134,8 @@ class _WindowWatcherState extends State<WindowWatcher>
   void onWindowRestore() {
     ref.notifier(sleepProvider).setState((_) => false);
   }
+
+  bool get _isWindowsCardMode =>
+      WindowsReceiveCardController.isWindowCardMode ||
+      WindowsSendCard.isWindowCardMode;
 }

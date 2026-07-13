@@ -942,14 +942,10 @@ class ReceiveController {
             // 单实例已运行时，文件分享直接显示发送卡片，不进入仪表盘。
             final cardContext = Routerino.context;
             if (!cardContext.mounted) return;
-            final cardClosed = WindowsSendCard.open(cardContext);
-            // 先将卡片路由放入 Navigator，再显示窗口，避免仪表盘闪现。
-            await Future<void>.delayed(Duration.zero);
-            await showFromTray();
-            await cardClosed;
-            if (!wasVisible) {
-              await hideToTray();
-            }
+            await WindowsSendCard.open(
+              cardContext,
+              returnToTray: !wasVisible,
+            );
           } else {
             server.ref
                 .redux(homePageControllerProvider)

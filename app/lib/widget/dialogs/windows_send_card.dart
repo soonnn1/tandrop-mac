@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:common/model/device.dart';
 import 'package:common/model/session_status.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/state/send/send_session_state.dart';
@@ -15,6 +16,8 @@ import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/file_speed_helper.dart';
 import 'package:localsend_app/widget/file_thumbnail.dart';
 import 'package:refena_flutter/refena_flutter.dart';
+import 'package:screen_retriever/screen_retriever.dart';
+import 'package:window_manager/window_manager.dart';
 
 /// Windows 端的 AirDrop 风格发送浮动卡片。
 class WindowsSendCard extends StatefulWidget {
@@ -23,15 +26,17 @@ class WindowsSendCard extends StatefulWidget {
   const WindowsSendCard({this.suggestedTarget, super.key});
 
   static bool _isOpen = false;
+  static bool isWindowCardMode = false;
 
   static Future<void> open(
     BuildContext context, {
     Device? suggestedTarget,
+    bool returnToTray = false,
   }) async {
     if (_isOpen) return;
     _isOpen = true;
     try {
-      await showGeneralDialog<void>(
+      final dialogClosed = showGeneralDialog<void>(
         context: context,
         barrierDismissible: false,
         barrierLabel: 'Windows send card',
@@ -41,13 +46,113 @@ class WindowsSendCard extends StatefulWidget {
           child: WindowsSendCard(suggestedTarget: suggestedTarget),
         ),
       );
+      await _WindowsSendWindowController.enterCardWindow();
+      await dialogClosed;
     } finally {
+      await _WindowsSendWindowController.restoreWindow(
+        returnToTray: returnToTray,
+      );
       _isOpen = false;
     }
   }
 
   @override
   State<WindowsSendCard> createState() => _WindowsSendCardState();
+}
+
+class _WindowsSendWindowController {
+  static _SendWindowSnapshot? _snapshot;
+
+  static Future<void> enterCardWindow() async {
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
+    if (_snapshot == null) {
+      _snapshot = _SendWindowSnapshot(
+        position: await windowManager.getPosition(),
+        size: await windowManager.getSize(),
+        visible: await windowManager.isVisible(),
+        minimized: await windowManager.isMinimized(),
+        maximized: await windowManager.isMaximized(),
+        resizable: await windowManager.isResizable(),
+        alwaysOnTop: await windowManager.isAlwaysOnTop(),
+        skipTaskbar: await windowManager.isSkipTaskbar(),
+      );
+    }
+
+    WindowsSendCard.isWindowCardMode = true;
+    const cardWindowSize = Size(780, 600);
+    final display = await ScreenRetriever.instance.getPrimaryDisplay();
+    final visiblePosition = display.visiblePosition ?? Offset.zero;
+    final visibleSize = display.visibleSize ?? display.size;
+    final position = Offset(
+      visiblePosition.dx + (visibleSize.width - cardWindowSize.width) / 2,
+      visiblePosition.dy + (visibleSize.height - cardWindowSize.height) / 2,
+    );
+
+    if (await windowManager.isMaximized()) {
+      await windowManager.unmaximize();
+    }
+    if (await windowManager.isMinimized()) {
+      await windowManager.restore();
+    }
+    await windowManager.setMinimumSize(const Size(760, 560));
+    await windowManager.setResizable(false);
+    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    await windowManager.setAlwaysOnTop(true);
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.setSize(cardWindowSize);
+    await windowManager.setPosition(position);
+    await windowManager.show();
+    await windowManager.focus();
+  }
+
+  static Future<void> restoreWindow({required bool returnToTray}) async {
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
+    final snapshot = _snapshot;
+    if (snapshot == null) return;
+    _snapshot = null;
+
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setMinimumSize(const Size(400, 500));
+    await windowManager.setResizable(snapshot.resizable);
+    await windowManager.setSize(snapshot.size);
+    await windowManager.setPosition(snapshot.position);
+    if (snapshot.maximized) {
+      await windowManager.maximize();
+    }
+    await windowManager.setAlwaysOnTop(snapshot.alwaysOnTop);
+    await windowManager.setSkipTaskbar(snapshot.skipTaskbar);
+    if (returnToTray || !snapshot.visible) {
+      await windowManager.hide();
+    } else if (snapshot.minimized) {
+      await windowManager.minimize();
+    } else {
+      await windowManager.show();
+      await windowManager.focus();
+    }
+    WindowsSendCard.isWindowCardMode = false;
+  }
+}
+
+class _SendWindowSnapshot {
+  final Offset position;
+  final Size size;
+  final bool visible;
+  final bool minimized;
+  final bool maximized;
+  final bool resizable;
+  final bool alwaysOnTop;
+  final bool skipTaskbar;
+
+  const _SendWindowSnapshot({
+    required this.position,
+    required this.size,
+    required this.visible,
+    required this.minimized,
+    required this.maximized,
+    required this.resizable,
+    required this.alwaysOnTop,
+    required this.skipTaskbar,
+  });
 }
 
 class _WindowsSendCardState extends State<WindowsSendCard> with Refena {
