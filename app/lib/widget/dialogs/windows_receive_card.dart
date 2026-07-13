@@ -317,7 +317,7 @@ class _WindowsReceiveCardHostState extends State<WindowsReceiveCardHost> {
         _decision != null &&
         !_decision!.isCompleted) {
       _decision!.complete(false);
-    } else {
+    } else if (_stage == _ReceiveCardStage.receiving) {
       // 接收阶段的“取消”必须真正终止会话，不能只隐藏界面。
       _request?.onCancel?.call();
     }
@@ -405,7 +405,7 @@ class _WindowsReceiveCardWindowApp extends StatefulWidget {
 
 class _WindowsReceiveCardWindowAppState
     extends State<_WindowsReceiveCardWindowApp> with WindowListener {
-  static const _windowSize = Size(680, 230);
+  static const _windowSize = Size(380, 98);
 
   Timer? _pollTimer;
   WindowsReceiveRequest? _request;
@@ -452,15 +452,15 @@ class _WindowsReceiveCardWindowAppState
     final visibleOrigin = display.visiblePosition ?? Offset.zero;
     final visibleSize = display.visibleSize ?? display.size;
     final target = Offset(
-      visibleOrigin.dx + visibleSize.width - _windowSize.width - 22,
+      visibleOrigin.dx + visibleSize.width - _windowSize.width - 18,
       visibleOrigin.dy + 18,
     );
-    final hidden = Offset(target.dx, target.dy - _windowSize.height - 24);
+    final hidden = Offset(target.dx + _windowSize.width + 24, target.dy);
     _visiblePosition = target;
 
     const options = WindowOptions(
       size: _windowSize,
-      backgroundColor: Color(0xFF2A2117),
+      backgroundColor: Color(0xFFF3F3F3),
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
@@ -473,7 +473,7 @@ class _WindowsReceiveCardWindowAppState
       await windowManager.setHasShadow(false);
       await windowManager.setPosition(hidden);
       await _receiveCardNativeChannel.invokeMethod<void>(
-          'setRoundedRegion', 30);
+          'setRoundedRegion', 17);
       await Future<void>.delayed(const Duration(milliseconds: 80));
       await windowManager.show();
       await _animateWindow(hidden, target, const Duration(milliseconds: 240));
@@ -541,8 +541,8 @@ class _WindowsReceiveCardWindowAppState
     _pollTimer?.cancel();
     final start = await windowManager.getPosition();
     final target = Offset(
-      start.dx,
-      (_visiblePosition?.dy ?? start.dy) - _windowSize.height - 24,
+      (_visiblePosition?.dx ?? start.dx) + _windowSize.width + 24,
+      start.dy,
     );
     await _animateWindow(start, target, const Duration(milliseconds: 190));
     try {
@@ -582,9 +582,9 @@ class _WindowsReceiveCardWindowAppState
     final request = _request;
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(useMaterial3: true),
+      theme: ThemeData.light(useMaterial3: true),
       home: Material(
-        color: const Color(0xFF2A2117),
+        color: const Color(0xFFF3F3F3),
         child: request == null
             ? const SizedBox.expand()
             : Directionality(
@@ -639,67 +639,82 @@ class _WindowsReceiveCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final firstFile = request.firstFile;
-    final progressColor = hasError ? Colors.redAccent : const Color(0xFF0A84FF);
-
     return Container(
-      width: 680,
-      constraints: const BoxConstraints(minHeight: 202, maxHeight: 230),
-      padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
+      width: 380,
+      height: 98,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: Colors.white.withOpacity(0.16)),
-        color: const Color(0xE62A2117),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.28),
-            blurRadius: 28,
-            offset: const Offset(0, 14),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: const Color(0xFFB8B8B8), width: 0.8),
+        color: const Color(0xF4F3F3F3),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+      child: Stack(
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _AvatarBadge(stage: stage),
-              const SizedBox(width: 18),
-              Expanded(
-                  child: _TextBlock(
-                      request: request,
-                      currentFile: currentFile,
-                      stage: stage)),
-              const SizedBox(width: 16),
-              _PreviewBox(file: firstFile),
-            ],
+          Positioned(
+            left: 6,
+            top: 5,
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 18,
+                  height: 18,
+                ),
+                onPressed: onDecline,
+                icon: const Icon(Icons.close, size: 14),
+                color: const Color(0xFF242424),
+              ),
+            ),
           ),
-          const SizedBox(height: 18),
-          Divider(height: 1, color: Colors.white.withOpacity(0.16)),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(999),
-                  child: LinearProgressIndicator(
-                    minHeight: 14,
-                    value: stage == _ReceiveCardStage.waiting ? 0 : progress,
-                    color: progressColor,
-                    backgroundColor: Colors.white.withOpacity(0.12),
-                  ),
+          Positioned(
+            left: 15,
+            top: 20,
+            child: _AvatarBadge(stage: stage),
+          ),
+          Positioned(
+            left: 62,
+            top: 16,
+            width: 245,
+            child: _TextBlock(
+              request: request,
+              currentFile: currentFile,
+              stage: stage,
+              progress: progress,
+            ),
+          ),
+          Positioned(
+            right: 21,
+            top: 17,
+            child: _PreviewBox(file: firstFile),
+          ),
+          if (stage == _ReceiveCardStage.receiving)
+            Positioned(
+              left: 15,
+              right: 15,
+              bottom: 14,
+              height: 6,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  value: progress.clamp(0, 1),
+                  color: const Color(0xFFA8A8A8),
+                  backgroundColor: const Color(0xFFE0E0E0),
                 ),
               ),
-              const SizedBox(width: 16),
-              _TrailingAction(
+            )
+          else
+            Positioned(
+              left: 82,
+              bottom: 9,
+              child: _TrailingAction(
                 stage: stage,
                 onAccept: onAccept,
                 onDecline: onDecline,
                 onOpen: onOpen,
                 onOpenFolder: onOpenFolder,
               ),
-            ],
-          ),
+            ),
         ],
       ),
     );
@@ -710,61 +725,73 @@ class _TextBlock extends StatelessWidget {
   final WindowsReceiveRequest request;
   final String? currentFile;
   final _ReceiveCardStage stage;
+  final double progress;
 
   const _TextBlock({
     required this.request,
     required this.currentFile,
     required this.stage,
+    required this.progress,
   });
 
   @override
   Widget build(BuildContext context) {
-    final fileCount = request.files.length;
-    final typeText = _fileTypeText(request.firstFile.fileType);
     final title = switch (stage) {
-      _ReceiveCardStage.waiting => '请求投送',
-      _ReceiveCardStage.receiving => '正在接收 $fileCount 个$typeText',
+      _ReceiveCardStage.waiting => request.senderAlias,
+      _ReceiveCardStage.receiving => '正在接收',
       _ReceiveCardStage.finished => '接收完成',
       _ReceiveCardStage.failed => '接收失败',
+    };
+    final detail = switch (stage) {
+      _ReceiveCardStage.waiting => '想发送 ${request.files.length} 个项目',
+      _ReceiveCardStage.receiving => currentFile ?? request.firstFile.fileName,
+      _ReceiveCardStage.finished => '文件已保存',
+      _ReceiveCardStage.failed => '请检查发送方或保存位置',
+    };
+    final status = switch (stage) {
+      _ReceiveCardStage.waiting =>
+        '${request.firstFile.fileName} · ${request.totalSize.asReadableFileSize}',
+      _ReceiveCardStage.receiving => '${(progress * 100).round()}%',
+      _ => '',
     };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          request.senderAlias,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 24,
-            fontWeight: FontWeight.w800,
-            height: 1.1,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text(
           title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.92),
-            fontSize: 21,
-            fontWeight: FontWeight.w700,
-            height: 1.1,
+          style: const TextStyle(
+            color: Color(0xFF1F1F1F),
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+            height: 1.15,
           ),
         ),
-        const SizedBox(height: 8),
         Text(
-          '${currentFile ?? request.firstFile.fileName} · ${request.totalSize.asReadableFileSize}',
+          detail,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: Colors.white.withOpacity(0.66),
-            fontSize: 17,
-            fontWeight: FontWeight.w500,
+          style: const TextStyle(
+            color: Color(0xFF252525),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            height: 1.25,
           ),
         ),
+        if (status.isNotEmpty)
+          Text(
+            status,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF777777),
+              fontSize: 9,
+              fontWeight: FontWeight.w500,
+              height: 1.35,
+            ),
+          ),
       ],
     );
   }
@@ -777,45 +804,10 @@ class _AvatarBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeColor = switch (stage) {
-      _ReceiveCardStage.finished => Colors.greenAccent,
-      _ReceiveCardStage.failed => Colors.redAccent,
-      _ => const Color(0xFF0A84FF),
-    };
-    final badgeIcon = switch (stage) {
-      _ReceiveCardStage.finished => Icons.check,
-      _ReceiveCardStage.failed => Icons.close,
-      _ => Icons.arrow_downward_rounded,
-    };
-
-    return SizedBox(
-      width: 74,
-      height: 74,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          const CircleAvatar(
-            radius: 37,
-            backgroundColor: Color(0xFF2F5F99),
-            child: Icon(Icons.person, color: Color(0xFFDDE6F3), size: 52),
-          ),
-          Positioned(
-            right: -2,
-            bottom: -2,
-            child: Container(
-              width: 26,
-              height: 26,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: badgeColor,
-                border:
-                    Border.all(color: Colors.white.withOpacity(0.65), width: 2),
-              ),
-              child: Icon(badgeIcon, color: Colors.white, size: 16),
-            ),
-          ),
-        ],
-      ),
+    return const CircleAvatar(
+      radius: 18,
+      backgroundColor: Color(0xFFA9D1FF),
+      child: Icon(Icons.person, color: Colors.white, size: 27),
     );
   }
 }
@@ -828,17 +820,17 @@ class _PreviewBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 96,
-      height: 96,
+      width: 36,
+      height: 36,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(14),
+        color: const Color(0xFFE5E5E5),
+        borderRadius: BorderRadius.circular(9),
       ),
       clipBehavior: Clip.antiAlias,
       child: Icon(
         _fileIcon(file.fileType),
-        color: Colors.white.withOpacity(0.88),
-        size: 42,
+        color: const Color(0xFF8B8B8B),
+        size: 25,
       ),
     );
   }
@@ -866,39 +858,37 @@ class _TrailingAction extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             _PillButton(label: '拒绝', onPressed: onDecline),
-            const SizedBox(width: 10),
-            _PillButton(label: '接收', primary: true, onPressed: onAccept),
+            const SizedBox(width: 36),
+            _PillButton(label: '接收', onPressed: onAccept),
           ],
         ),
       _ReceiveCardStage.finished => Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _PillButton(label: '在文件夹中显示', onPressed: onOpenFolder),
+            const SizedBox(width: 36),
             _PillButton(label: '打开', onPressed: onOpen),
-            const SizedBox(width: 10),
-            _PillButton(label: '文件夹', onPressed: onOpenFolder),
           ],
         ),
-      _ReceiveCardStage.failed => IconButton.filledTonal(
-          onPressed: onDecline,
-          icon: const Icon(Icons.close),
-          color: Colors.white,
-          style: IconButton.styleFrom(
-              backgroundColor: Colors.white.withOpacity(0.14)),
+      _ReceiveCardStage.failed => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(width: 116),
+            _PillButton(label: '关闭', onPressed: onDecline),
+          ],
         ),
-      _ => _PillButton(label: '取消', onPressed: onDecline),
+      _ => const SizedBox.shrink(),
     };
   }
 }
 
 class _PillButton extends StatelessWidget {
   final String label;
-  final bool primary;
   final VoidCallback onPressed;
 
   const _PillButton({
     required this.label,
     required this.onPressed,
-    this.primary = false,
   });
 
   @override
@@ -906,27 +896,19 @@ class _PillButton extends StatelessWidget {
     return TextButton(
       onPressed: onPressed,
       style: TextButton.styleFrom(
-        foregroundColor: Colors.white,
-        backgroundColor:
-            primary ? const Color(0xFF0A84FF) : Colors.white.withOpacity(0.14),
-        minimumSize: const Size(82, 44),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+        foregroundColor: const Color(0xFF9B9B9B),
+        backgroundColor: const Color(0xFFE9E9E9),
+        minimumSize: const Size(80, 22),
+        maximumSize: const Size(80, 22),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+        textStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
       ),
-      child: Text(label),
+      child: FittedBox(fit: BoxFit.scaleDown, child: Text(label)),
     );
   }
-}
-
-String _fileTypeText(FileType type) {
-  return switch (type) {
-    FileType.image => '图片',
-    FileType.video => '视频',
-    FileType.pdf => 'PDF',
-    FileType.text => '文本',
-    FileType.apk => 'APK',
-    FileType.other => '项目',
-  };
 }
 
 IconData _fileIcon(FileType type) {
