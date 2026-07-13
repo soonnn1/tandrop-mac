@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:common/model/device.dart';
+import 'package:common/model/file_type.dart';
 import 'package:common/model/session_status.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/foundation.dart';
@@ -10,15 +13,21 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:localsend_app/model/cross_file.dart';
 import 'package:localsend_app/model/state/send/send_session_state.dart';
+import 'package:localsend_app/model/state/server/server_state.dart';
+import 'package:localsend_app/provider/local_ip_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
+import 'package:localsend_app/provider/network/server/server_provider.dart';
 import 'package:localsend_app/provider/progress_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
+import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/util/device_type_ext.dart';
 import 'package:localsend_app/util/file_size_helper.dart';
 import 'package:localsend_app/util/file_speed_helper.dart';
+import 'package:localsend_app/util/file_type_ext.dart';
 import 'package:localsend_app/util/native/tray_helper.dart';
+import 'package:pretty_qr_code/pretty_qr_code.dart';
 import 'package:refena_flutter/refena_flutter.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -108,6 +117,7 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
   String? _sessionId;
   SessionStatus? _terminalStatus;
   Timer? _resetTimer;
+  bool _temporarilyUsesHttp = false;
 
   @override
   void initState() {
@@ -145,8 +155,15 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
           ref.notifier(sendProvider).cancelSession(sessionId);
         }
         return _snapshot();
+      case 'downloadQr':
+        return _createDownloadQr();
       case 'close':
         _resetSession();
+        try {
+          await _restoreServerAfterQr();
+        } catch (_) {
+          // 恢复 HTTPS 失败也不能阻止独立卡片关闭。
+        }
         await WindowsSendCardWindowManager.markClosed();
         return null;
       default:
@@ -211,6 +228,63 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
     _terminalStatus = null;
   }
 
+  Future<Map<String, dynamic>> _createDownloadQr() async {
+    try {
+      final files = ref.read(selectedSendingFilesProvider);
+      final localIps = ref.read(localIpProvider).localIps;
+      // 重启服务后 Provider 返回值可为空，显式保留可空类型避免错误的类型提升。
+      ServerState? server = ref.read(serverProvider);
+      if (files.isEmpty || localIps.isEmpty) {
+        return {'error': '无法生成二维码，请确认文件与网络可用'};
+      }
+
+      if (server == null) {
+        await ref.notifier(serverProvider).startServerFromSettings();
+        server = ref.read(serverProvider);
+      }
+      if (server == null) {
+        return {'error': '网页下载服务启动失败'};
+      }
+      if (server.session != null) {
+        return {'error': '正在接收文件，暂时无法开启网页下载'};
+      }
+
+      if (server.https) {
+        final settings = ref.read(settingsProvider);
+        await ref.notifier(serverProvider).restartServer(
+              alias: settings.alias,
+              port: settings.port,
+              https: false,
+            );
+        // 保留可空类型，避免前面的非空判断让 Dart 错误缩窄赋值类型。
+        final restartedServer = ref.read(serverProvider);
+        server = restartedServer;
+        _temporarilyUsesHttp = true;
+      }
+      if (server == null) {
+        return {'error': '网页下载服务启动失败'};
+      }
+
+      // 复用现有网页下载服务，扫码设备无需安装 TanDrop。
+      await ref.notifier(serverProvider).initializeWebSend(files);
+      final pin = (math.Random.secure().nextInt(900000) + 100000).toString();
+      ref.notifier(serverProvider).setWebSendPin(pin);
+      ref.notifier(serverProvider).setWebSendAutoAccept(true);
+      return {
+        'url': 'http://${localIps.first}:${server.port}/?pin=$pin',
+        'pin': pin,
+      };
+    } catch (_) {
+      return {'error': '二维码生成失败，请稍后重试'};
+    }
+  }
+
+  Future<void> _restoreServerAfterQr() async {
+    if (!_temporarilyUsesHttp) return;
+    _temporarilyUsesHttp = false;
+    await ref.notifier(serverProvider).restartServerFromSettings();
+  }
+
   Map<String, dynamic> _snapshot() {
     final files = ref.read(selectedSendingFilesProvider);
     final devices = ref.read(nearbyDevicesProvider).devices.values.toList()
@@ -241,11 +315,15 @@ class _WindowsSendCardBridgeState extends State<WindowsSendCardBridge>
 
   Map<String, dynamic> _filesToJson(List<CrossFile> files) {
     final total = files.fold<int>(0, (sum, file) => sum + file.size);
+    final first = files.isEmpty ? null : files.first;
     return {
       'count': files.length,
       'totalSize': total,
-      'firstName': files.isEmpty ? '未选择文件' : files.first.name,
-      'firstSize': files.isEmpty ? 0 : files.first.size,
+      'firstName': first?.name ?? '未选择文件',
+      'firstSize': first?.size ?? 0,
+      'firstPath': first?.path,
+      'firstType': first?.fileType.name,
+      'firstThumbnail': first?.thumbnail,
     };
   }
 
@@ -293,6 +371,10 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   Map<String, dynamic>? _snapshot;
   bool _closing = false;
   String? _connectionError;
+  String? _qrUrl;
+  String? _qrPin;
+  String? _qrError;
+  bool _qrLoading = false;
 
   @override
   void initState() {
@@ -371,6 +453,42 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
     setState(() => _snapshot = result.cast<String, dynamic>());
   }
 
+  Future<void> _showQr() async {
+    setState(() {
+      _qrLoading = true;
+      _qrUrl = null;
+      _qrPin = null;
+      _qrError = null;
+    });
+    try {
+      final result = await _sendCardChannel
+          .invokeMethod<Map<dynamic, dynamic>>('downloadQr');
+      if (!mounted) return;
+      final data = result?.cast<String, dynamic>() ?? <String, dynamic>{};
+      setState(() {
+        _qrLoading = false;
+        _qrUrl = data['url'] as String?;
+        _qrPin = data['pin'] as String?;
+        _qrError = data['error'] as String?;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _qrLoading = false;
+        _qrError = '二维码生成失败，请稍后重试';
+      });
+    }
+  }
+
+  void _hideQr() {
+    setState(() {
+      _qrUrl = null;
+      _qrPin = null;
+      _qrError = null;
+      _qrLoading = false;
+    });
+  }
+
   Future<void> _cancelOrClose() async {
     final session = (_snapshot?['session'] as Map?)?.cast<String, dynamic>();
     final status = session?['status'] as String?;
@@ -383,9 +501,13 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   Future<void> _close() async {
     if (_closing) return;
     _closing = true;
-    await _sendCardChannel.invokeMethod('close');
-    await windowManager.setPreventClose(false);
-    await windowManager.close();
+    try {
+      await _sendCardChannel.invokeMethod('close');
+    } finally {
+      // 主引擎已退出时通信会失败，子窗口仍必须能自行关闭。
+      await windowManager.setPreventClose(false);
+      await windowManager.close();
+    }
   }
 
   @override
@@ -409,8 +531,14 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
         child: _SendCardPanel(
           snapshot: _snapshot,
           connectionError: _connectionError,
+          qrUrl: _qrUrl,
+          qrPin: _qrPin,
+          qrError: _qrError,
+          qrLoading: _qrLoading,
           onRefresh: () => unawaited(_loadSnapshot(refresh: true)),
           onSend: (ip) => unawaited(_startSend(ip)),
+          onQr: () => unawaited(_showQr()),
+          onHideQr: _hideQr,
           onClose: () => unawaited(_cancelOrClose()),
         ),
       ),
@@ -421,15 +549,27 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
 class _SendCardPanel extends StatelessWidget {
   final Map<String, dynamic>? snapshot;
   final String? connectionError;
+  final String? qrUrl;
+  final String? qrPin;
+  final String? qrError;
+  final bool qrLoading;
   final VoidCallback onRefresh;
   final ValueChanged<String> onSend;
+  final VoidCallback onQr;
+  final VoidCallback onHideQr;
   final VoidCallback onClose;
 
   const _SendCardPanel({
     required this.snapshot,
     required this.connectionError,
+    required this.qrUrl,
+    required this.qrPin,
+    required this.qrError,
+    required this.qrLoading,
     required this.onRefresh,
     required this.onSend,
+    required this.onQr,
+    required this.onHideQr,
     required this.onClose,
   });
 
@@ -449,6 +589,7 @@ class _SendCardPanel extends StatelessWidget {
     final totalSize = files['totalSize'] as int? ?? 0;
     final firstName = files['firstName'] as String? ?? '未选择文件';
     final isIdle = status == null;
+    final showingQr = qrLoading || qrUrl != null || qrError != null;
 
     return Container(
       width: 720,
@@ -510,32 +651,45 @@ class _SendCardPanel extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 80, height: 80, child: _FilePreview()),
+              SizedBox(
+                width: 80,
+                height: 80,
+                child: _FilePreview(files: files),
+              ),
             ],
           ),
           const Divider(color: Color(0xFF68645F), height: 34),
           Expanded(
-            child: isIdle
-                ? _DevicePicker(
-                    devices: devices,
-                    connectionError: connectionError,
-                    onSend: onSend,
+            child: showingQr
+                ? _QrDownloadView(
+                    url: qrUrl,
+                    pin: qrPin,
+                    error: qrError,
+                    loading: qrLoading,
                   )
-                : _TransferStatus(session: session),
+                : isIdle
+                    ? _DevicePicker(
+                        devices: devices,
+                        connectionError: connectionError,
+                        onSend: onSend,
+                      )
+                    : _TransferStatus(session: session),
           ),
           const Divider(color: Color(0xFF68645F), height: 30),
           Row(
             children: [
               OutlinedButton.icon(
-                onPressed: isIdle ? onRefresh : null,
+                onPressed: isIdle && !showingQr ? onRefresh : null,
                 icon: const Icon(Icons.refresh_rounded),
                 label: const Text('刷新设备'),
               ),
               const SizedBox(width: 10),
               OutlinedButton.icon(
-                onPressed: isIdle ? () {} : null,
-                icon: const Icon(Icons.qr_code_rounded),
-                label: const Text('二维码'),
+                onPressed: isIdle ? (showingQr ? onHideQr : onQr) : null,
+                icon: Icon(
+                  showingQr ? Icons.arrow_back_rounded : Icons.qr_code_rounded,
+                ),
+                label: Text(showingQr ? '返回设备' : '二维码'),
               ),
               const Spacer(),
               FilledButton(
@@ -554,17 +708,141 @@ class _SendCardPanel extends StatelessWidget {
 }
 
 class _FilePreview extends StatelessWidget {
-  const _FilePreview();
+  final Map<String, dynamic> files;
+
+  const _FilePreview({required this.files});
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
+    final typeName = files['firstType'] as String?;
+    final fileType = FileType.values.firstWhere(
+      (type) => type.name == typeName,
+      orElse: () => FileType.other,
+    );
+    final thumbnail = files['firstThumbnail'] as Uint8List?;
+    final path = files['firstPath'] as String?;
+    final Widget preview;
+    if (thumbnail != null) {
+      preview = Image.memory(
+        thumbnail,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Icon(fileType.icon, size: 38),
+      );
+    } else if (fileType == FileType.image && path != null) {
+      preview = Image.file(
+        File(path),
+        fit: BoxFit.cover,
+        cacheWidth: 180,
+        errorBuilder: (_, __, ___) => Icon(fileType.icon, size: 38),
+      );
+    } else {
+      preview = Icon(fileType.icon, size: 38);
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: ColoredBox(
         color: const Color(0xFFD7F0EA),
-        borderRadius: BorderRadius.circular(12),
+        child: IconTheme(
+          data: const IconThemeData(color: Color(0xFF1D2C2A)),
+          child: Center(child: preview),
+        ),
       ),
-      child: const Center(
-        child: Icon(Icons.attach_file_rounded, color: Color(0xFF1D2C2A)),
+    );
+  }
+}
+
+class _QrDownloadView extends StatelessWidget {
+  final String? url;
+  final String? pin;
+  final String? error;
+  final bool loading;
+
+  const _QrDownloadView({
+    required this.url,
+    required this.pin,
+    required this.error,
+    required this.loading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Center(child: CircularProgressIndicator(strokeWidth: 3));
+    }
+    if (error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                color: Colors.redAccent, size: 44),
+            const SizedBox(height: 12),
+            Text(
+              error!,
+              style: const TextStyle(color: Colors.white70, fontSize: 18),
+            ),
+          ],
+        ),
+      );
+    }
+    if (url == null) return const SizedBox.shrink();
+
+    return Center(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 190,
+            height: 190,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: PrettyQrView.data(
+              data: url!,
+              errorCorrectLevel: QrErrorCorrectLevel.Q,
+              decoration: const PrettyQrDecoration(
+                shape: PrettyQrSmoothSymbol(roundFactor: 0),
+              ),
+            ),
+          ),
+          const SizedBox(width: 24),
+          SizedBox(
+            width: 230,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '扫码下载文件',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  '手机连接同一局域网后，用浏览器扫码即可下载。',
+                  style: TextStyle(color: Colors.white70, fontSize: 15),
+                ),
+                if (pin != null) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    '访问码  $pin',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -603,36 +881,75 @@ class _DevicePicker extends StatelessWidget {
       );
     }
     return ListView.separated(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
       itemCount: devices.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      separatorBuilder: (_, __) => const SizedBox(width: 16),
       itemBuilder: (_, index) {
         final device = devices[index];
         final ip = device['ip'] as String;
-        final deviceType = device['deviceType'] == 'mobile'
-            ? DeviceType.mobile
-            : DeviceType.desktop;
-        return ListTile(
-          tileColor: const Color(0xFF3A3734),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-          ),
-          leading: Icon(deviceType.icon, color: Colors.white, size: 32),
-          title: Text(
-            device['alias'] as String? ?? ip,
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w700,
+        final deviceTypeName = device['deviceType'] as String?;
+        final deviceType = DeviceType.values.firstWhere(
+          (type) => type.name == deviceTypeName,
+          orElse: () => DeviceType.desktop,
+        );
+        final alias = device['alias'] as String? ?? ip;
+        return SizedBox(
+          width: 112,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => onSend(ip),
+              borderRadius: BorderRadius.circular(18),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+                child: Column(
+                  children: [
+                    Container(
+                      width: 78,
+                      height: 78,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: const Color(0xFF45413E),
+                        border: Border.all(
+                          color: const Color(0xFF8B8782),
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Icon(
+                        deviceType.icon,
+                        color: Colors.white,
+                        size: 38,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      alias,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      device['deviceModel'] as String? ?? '点击发送',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-          subtitle: Text(
-            device['deviceModel'] as String? ?? ip,
-            style: const TextStyle(color: Colors.white60),
-          ),
-          trailing: FilledButton(
-            onPressed: () => onSend(ip),
-            child: const Text('发送'),
-          ),
-          onTap: () => onSend(ip),
         );
       },
     );

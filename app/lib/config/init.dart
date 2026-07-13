@@ -195,6 +195,7 @@ Future<RefenaContainer> preInit(List<String> args) async {
 
 StreamSubscription? _sharedMediaSubscription;
 bool _sendPanelTemporarilyUsesHttp = false;
+String? _sendPanelActiveSessionId;
 
 String _formatRemainingTime(int seconds) {
   if (seconds < 60) return '剩余 ${seconds}s';
@@ -236,6 +237,17 @@ Future<void> _handleSendPanelAction(
     if (_sendPanelTemporarilyUsesHttp) {
       _sendPanelTemporarilyUsesHttp = false;
       await ref.notifier(serverProvider).restartServerFromSettings();
+    }
+    return;
+  }
+
+  if (type == 'cancel') {
+    final sessionId = _sendPanelActiveSessionId;
+    if (sessionId != null) {
+      // 原生卡片只发出操作事件，真正的传输终止仍由 Dart 发送服务完成。
+      ref.notifier(sendProvider).cancelSession(sessionId);
+      _sendPanelActiveSessionId = null;
+      await updateSendPanelStatus(status: 'failed', detail: '已终止发送');
     }
     return;
   }
@@ -327,6 +339,9 @@ Future<void> _handleSendPanelAction(
           target: target,
           files: files,
           background: true,
+          onSessionCreated: (sessionId) {
+            _sendPanelActiveSessionId = sessionId;
+          },
           onProgress: (progress) {
             final sentBytes = (totalBytes * progress).round();
             final now = DateTime.now();
@@ -387,6 +402,8 @@ Future<void> _handleSendPanelAction(
       status: 'failed',
       detail: e.toString(),
     );
+  } finally {
+    _sendPanelActiveSessionId = null;
   }
 }
 

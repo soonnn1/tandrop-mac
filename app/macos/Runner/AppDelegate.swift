@@ -363,6 +363,7 @@ final class SendPanelController {
     private let qrImageView = NSImageView()
     private let qrHintLabel = NSTextField(labelWithString: "扫码下载文件")
     private var filePaths: [String] = []
+    private var isSending = false
     
     func show(filePaths: [String], strings: [String]) {
         guard !filePaths.isEmpty || !strings.isEmpty else { return }
@@ -382,6 +383,8 @@ final class SendPanelController {
         updatePreview(path: filePaths.first)
         showSearchingState()
         cancelButton.title = "取消"
+        cancelButton.isEnabled = true
+        isSending = false
         
         positionPanel()
         panel?.orderFrontRegardless()
@@ -424,6 +427,7 @@ final class SendPanelController {
         let progress = args["progress"] as? Double
         switch status {
         case "sending":
+            isSending = true
             titleLabel.stringValue = "TanDrop"
             detailLabel.stringValue = "正在发送"
             statusLabel.stringValue = detail ?? "正在建立连接"
@@ -431,12 +435,16 @@ final class SendPanelController {
             progressIndicator.doubleValue = (progress ?? 0) * 100
             refreshButton.isHidden = true
             qrButton.isHidden = true
+            cancelButton.title = "终止"
+            cancelButton.isEnabled = true
         case "completed":
+            isSending = false
             titleLabel.stringValue = "TanDrop 已完成"
             detailLabel.stringValue = "发送完成"
             statusLabel.stringValue = detail ?? "文件已发送"
             progressIndicator.isHidden = true
             cancelButton.title = "完成"
+            cancelButton.isEnabled = true
             refreshButton.isHidden = true
             qrButton.isHidden = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -445,11 +453,13 @@ final class SendPanelController {
                 self?.close()
             }
         case "failed":
+            isSending = false
             titleLabel.stringValue = "TanDrop 发送失败"
             detailLabel.stringValue = "发送失败"
             statusLabel.stringValue = detail ?? "请重试"
             progressIndicator.isHidden = true
             cancelButton.title = "关闭"
+            cancelButton.isEnabled = true
             refreshButton.isHidden = false
             qrButton.isHidden = false
         default:
@@ -506,7 +516,7 @@ final class SendPanelController {
         closeButton.font = .systemFont(ofSize: 13, weight: .bold)
         
         cancelButton.target = self
-        cancelButton.action = #selector(closePanel)
+        cancelButton.action = #selector(cancelOrClosePanel)
         cancelButton.bezelStyle = .rounded
         cancelButton.font = .systemFont(ofSize: 13, weight: .semibold)
 
@@ -683,6 +693,16 @@ final class SendPanelController {
     
     @objc private func closePanel() {
         close()
+    }
+
+    @objc private func cancelOrClosePanel() {
+        if isSending {
+            // 传输中的底部按钮明确终止会话；顶部叉仍仅用于隐藏卡片。
+            cancelButton.isEnabled = false
+            onAction?(["type": "cancel"])
+        } else {
+            close()
+        }
     }
 
     @objc private func refreshDevices() {

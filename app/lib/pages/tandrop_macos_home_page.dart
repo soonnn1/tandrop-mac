@@ -875,6 +875,13 @@ class _DeviceRow extends StatefulWidget {
 class _DeviceRowState extends State<_DeviceRow> {
   _DeviceTransferState _transferState = _DeviceTransferState.idle;
   String? _sessionId;
+  Timer? _resultResetTimer;
+
+  @override
+  void dispose() {
+    _resultResetTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -964,29 +971,30 @@ class _DeviceRowState extends State<_DeviceRow> {
     }
 
     if (_transferState == _DeviceTransferState.sending) {
-      return SizedBox(
-        width: 72,
-        child: Text(
-          '传输中',
-          textAlign: TextAlign.right,
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: colors.primary,
-                fontWeight: FontWeight.w600,
-              ),
+      return OutlinedButton.icon(
+        onPressed: _sessionId == null ? null : _cancelTransfer,
+        icon: const Icon(Icons.stop_circle_outlined, size: 16),
+        label: const Text('终止'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: const Color(0xFFE05252),
+          side: const BorderSide(color: Color(0xFFE05252)),
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
       );
-    }
-
-    if (_transferState == _DeviceTransferState.completed) {
-      return const Icon(Icons.check_circle_rounded, color: Color(0xFF27AE60), size: 22);
     }
 
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        // 完成提示保留在发送按钮左侧，不替换按钮，避免让设备看起来消失。
+        if (_transferState == _DeviceTransferState.completed) ...[
+          const Icon(Icons.check_circle_rounded, color: Color(0xFF27AE60), size: 20),
+          const SizedBox(width: 8),
+        ],
         if (_transferState == _DeviceTransferState.failed) ...[
           const Icon(Icons.cancel_rounded, color: Color(0xFFE05252), size: 20),
-          const SizedBox(width: 7),
+          const SizedBox(width: 8),
         ],
         OutlinedButton(
           onPressed: widget.enabled
@@ -1027,7 +1035,8 @@ class _DeviceRowState extends State<_DeviceRow> {
   }
 
   Future<void> _sendToDevice(BuildContext context) async {
-    final files = context.ref.read(selectedSendingFilesProvider);
+    final ref = context.ref;
+    final files = ref.read(selectedSendingFilesProvider);
     if (files.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('请先在左侧选择要发送的文件。')),
@@ -1040,7 +1049,7 @@ class _DeviceRowState extends State<_DeviceRow> {
     });
 
     try {
-      final result = await context.ref.notifier(sendProvider).startSession(
+      final result = await ref.notifier(sendProvider).startSession(
             target: widget.device,
             files: files,
             background: true,
@@ -1049,19 +1058,47 @@ class _DeviceRowState extends State<_DeviceRow> {
             },
           );
       if (!mounted) return;
+      if (result == SessionStatus.finished) {
+        // 主界面的一次发送完成后，不保留旧的待发送文件。
+        ref.redux(selectedSendingFilesProvider).dispatch(ClearSelectionAction());
+      }
       setState(() {
         _transferState = result == SessionStatus.finished
             ? _DeviceTransferState.completed
             : _DeviceTransferState.failed;
         _sessionId = null;
       });
+      _scheduleResultReset();
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _transferState = _DeviceTransferState.failed;
         _sessionId = null;
       });
+      _scheduleResultReset();
     }
+  }
+
+  /// 使用官方发送会话的取消逻辑，同时通知对方停止本次传输。
+  void _cancelTransfer() {
+    final sessionId = _sessionId;
+    if (sessionId == null) return;
+    context.ref.notifier(sendProvider).cancelSession(sessionId);
+    setState(() {
+      _transferState = _DeviceTransferState.failed;
+      _sessionId = null;
+    });
+    _scheduleResultReset();
+  }
+
+  /// 结果图标只作为短暂反馈，之后恢复为可再次发送的设备行。
+  void _scheduleResultReset() {
+    _resultResetTimer?.cancel();
+    _resultResetTimer = Timer(const Duration(seconds: 1), () {
+      if (mounted) {
+        setState(() => _transferState = _DeviceTransferState.idle);
+      }
+    });
   }
 }
 
