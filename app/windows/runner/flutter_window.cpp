@@ -7,6 +7,8 @@
 #include <memory>
 #include <optional>
 
+#include <dwmapi.h>
+
 #include "desktop_multi_window/desktop_multi_window_plugin.h"
 #include "flutter/generated_plugin_registrant.h"
 
@@ -56,7 +58,7 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
     HWND view = registrar_->GetView()->GetNativeWindow();
     HWND window = ::GetAncestor(view, GA_ROOT);
     RECT bounds{};
-    if (window == nullptr || !::GetClientRect(window, &bounds)) {
+    if (window == nullptr || !::GetWindowRect(window, &bounds)) {
       result->Error("WINDOW_UNAVAILABLE",
                     "Unable to locate the send card window.");
       return;
@@ -64,9 +66,10 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
 
     const UINT dpi = ::GetDpiForWindow(window);
     const int radius = ::MulDiv(logical_radius, dpi, 96);
-    HRGN region = ::CreateRoundRectRgn(
-        0, 0, bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1,
-        radius * 2, radius * 2);
+    const int width = bounds.right - bounds.left;
+    const int height = bounds.bottom - bounds.top;
+    HRGN region = ::CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                       radius * 2, radius * 2);
     if (region == nullptr || !::SetWindowRgn(window, region, TRUE)) {
       if (region != nullptr) {
         ::DeleteObject(region);
@@ -74,6 +77,21 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
       result->Error("REGION_FAILED", "Unable to apply rounded window region.");
       return;
     }
+
+    // Windows 11 优先使用 DWM 的抗锯齿圆角；Windows 10 仍由
+    // SetWindowRgn 完成真实裁剪。未支持此属性时调用会安全失败。
+    constexpr DWORD kWindowCornerPreference = 33;
+    constexpr int kRoundCornerPreference = 2;
+    const int corner_preference = kRoundCornerPreference;
+    ::DwmSetWindowAttribute(window, kWindowCornerPreference, &corner_preference,
+                            sizeof(corner_preference));
+
+    // 强制 Windows 刷新已经显示的顶层窗口，避免保留旧的矩形表面。
+    ::SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                       SWP_FRAMECHANGED);
+    ::RedrawWindow(window, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
 
     // SetWindowRgn 成功后由系统接管 region 的生命周期。
     result->Success();

@@ -489,12 +489,10 @@ class _WindowsReceiveCardWindowAppState
     final hidden = Offset(target.dx + _windowSize.width + 24, target.dy);
     _visiblePosition = target;
 
-    final cardColor = _brightness == Brightness.dark
-        ? const Color(0xFF252525)
-        : const Color(0xFFF3F3F3);
     final options = WindowOptions(
       size: _windowSize,
-      backgroundColor: cardColor,
+      // 四角由原生窗口透明区域透出，卡片本身仍保持不透明。
+      backgroundColor: Colors.transparent,
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
