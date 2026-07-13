@@ -42,9 +42,29 @@ jobs:
           CMAKE_GENERATOR_PLATFORM: x64
         run: flutter build windows --release
 
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path app/dist | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            /DSourceDir="$env:GITHUB_WORKSPACE\app\build\windows\x64\runner\Release" `
+            /DIconFile="$env:GITHUB_WORKSPACE\app\assets\packaging\logo.ico" `
+            /DOutputDir="$env:GITHUB_WORKSPACE\app\dist" `
+            "scripts\compile_windows_exe-inno.iss"
+
       - name: Upload Windows build
         uses: actions/upload-artifact@v6
         with:
           name: tandrop-windows-release
           path: app/build/windows/x64/runner/Release/
+          if-no-files-found: error
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: tandrop-windows-installer
+          path: app/dist/TanDrop-Setup.exe
           if-no-files-found: error
