@@ -66,7 +66,7 @@ class WindowsSendCardWindowManager {
       ),
     );
 
-    await _controller!.show();
+    // 子窗口自行在 Flutter 首帧绘制完成后显示，避免 Windows 先闪出默认白底。
     if (returnToTray) {
       await hideToTray();
     }
@@ -288,6 +288,7 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   Timer? _pollTimer;
   Map<String, dynamic>? _snapshot;
   bool _closing = false;
+  String? _connectionError;
 
   @override
   void initState() {
@@ -313,25 +314,42 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
     const options = WindowOptions(
       size: Size(720, 520),
       center: true,
-      backgroundColor: Colors.transparent,
+      // Windows 不可靠地支持此多窗口插件的透明背景；使用卡片同色底，
+      // 从根源去除四角的白色默认窗口底。
+      backgroundColor: Color(0xFF2C2A28),
       skipTaskbar: true,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
     );
     await windowManager.setPreventClose(true);
+    // 去掉独立窗口残留的系统边框，卡片不应显示成普通应用窗口。
+    await windowManager.setAsFrameless();
+    await windowManager.setHasShadow(false);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.waitUntilReadyToShow(options, () async {
+      // 等待 Flutter 首帧，不能让原生窗口的默认白底先暴露出来。
+      await Future<void>.delayed(const Duration(milliseconds: 120));
       await windowManager.show();
       await windowManager.focus();
     });
   }
 
   Future<void> _loadSnapshot({bool refresh = false}) async {
-    final result = await _sendCardChannel.invokeMethod<Map<dynamic, dynamic>>(
-      refresh ? 'refresh' : 'snapshot',
-    );
-    if (!mounted || result == null) return;
-    setState(() => _snapshot = result.cast<String, dynamic>());
+    try {
+      final result = await _sendCardChannel.invokeMethod<Map<dynamic, dynamic>>(
+        refresh ? 'refresh' : 'snapshot',
+      );
+      if (!mounted || result == null) return;
+      setState(() {
+        _snapshot = result.cast<String, dynamic>();
+        _connectionError = null;
+      });
+    } catch (_) {
+      // 主窗口还在注册跨窗口通信时会短暂失败；轮询会自动重试。
+      if (mounted) {
+        setState(() => _connectionError = '正在连接 TanDrop…');
+      }
+    }
   }
 
   Future<void> _startSend(String ip) async {
@@ -367,10 +385,20 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF00A99D),
+          brightness: Brightness.dark,
+          surface: const Color(0xFF2C2A28),
+        ),
+        scaffoldBackgroundColor: const Color(0xFF2C2A28),
+      ),
       home: ColoredBox(
-        color: Colors.transparent,
+        color: const Color(0xFF2C2A28),
         child: _SendCardPanel(
           snapshot: _snapshot,
+          connectionError: _connectionError,
           onRefresh: () => unawaited(_loadSnapshot(refresh: true)),
           onSend: (ip) => unawaited(_startSend(ip)),
           onClose: () => unawaited(_cancelOrClose()),
@@ -382,12 +410,14 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
 
 class _SendCardPanel extends StatelessWidget {
   final Map<String, dynamic>? snapshot;
+  final String? connectionError;
   final VoidCallback onRefresh;
   final ValueChanged<String> onSend;
   final VoidCallback onClose;
 
   const _SendCardPanel({
     required this.snapshot,
+    required this.connectionError,
     required this.onRefresh,
     required this.onSend,
     required this.onClose,
@@ -476,7 +506,11 @@ class _SendCardPanel extends StatelessWidget {
           const Divider(color: Color(0xFF68645F), height: 34),
           Expanded(
             child: isIdle
-                ? _DevicePicker(devices: devices, onSend: onSend)
+                ? _DevicePicker(
+                    devices: devices,
+                    connectionError: connectionError,
+                    onSend: onSend,
+                  )
                 : _TransferStatus(session: session),
           ),
           const Divider(color: Color(0xFF68645F), height: 30),
@@ -528,17 +562,33 @@ class _FilePreview extends StatelessWidget {
 
 class _DevicePicker extends StatelessWidget {
   final List<Map<String, dynamic>> devices;
+  final String? connectionError;
   final ValueChanged<String> onSend;
 
-  const _DevicePicker({required this.devices, required this.onSend});
+  const _DevicePicker({
+    required this.devices,
+    required this.connectionError,
+    required this.onSend,
+  });
 
   @override
   Widget build(BuildContext context) {
     if (devices.isEmpty) {
-      return const Center(
-        child: Text(
-          '正在搜索附近设备...',
-          style: TextStyle(color: Colors.white70, fontSize: 20),
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              connectionError ?? '正在搜索附近设备…',
+              style: const TextStyle(color: Colors.white70, fontSize: 18),
+            ),
+          ],
         ),
       );
     }
