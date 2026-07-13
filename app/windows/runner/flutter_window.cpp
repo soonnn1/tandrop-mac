@@ -84,8 +84,11 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
 };
 
 void RegisterTanDropWindowPlugin(flutter::FlutterEngine* engine) {
-  auto* registrar = engine->GetRegistrarForPlugin(
-      "TanDropSendCardWindowPlugin");
+  FlutterDesktopPluginRegistrarRef registrar_ref =
+      engine->GetRegistrarForPlugin("TanDropSendCardWindowPlugin");
+  auto* registrar = flutter::PluginRegistrarManager::GetInstance()
+                        ->GetRegistrar<flutter::PluginRegistrarWindows>(
+                            registrar_ref);
   TanDropSendCardWindowPlugin::RegisterWithRegistrar(registrar);
 }
 
