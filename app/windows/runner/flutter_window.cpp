@@ -78,11 +78,11 @@ class TanDropSendCardWindowPlugin : public flutter::Plugin {
       return;
     }
 
-    // Windows 11 优先使用 DWM 的抗锯齿圆角；Windows 10 仍由
-    // SetWindowRgn 完成真实裁剪。未支持此属性时调用会安全失败。
+    // 关闭 DWM 额外的系统小圆角，避免它与 Flutter/SetWindowRgn
+    // 的自定义圆角叠加后露出四角底色。
     constexpr DWORD kWindowCornerPreference = 33;
-    constexpr int kRoundCornerPreference = 2;
-    const int corner_preference = kRoundCornerPreference;
+    constexpr int kDoNotRoundCornerPreference = 1;
+    const int corner_preference = kDoNotRoundCornerPreference;
     ::DwmSetWindowAttribute(window, kWindowCornerPreference, &corner_preference,
                             sizeof(corner_preference));
 
@@ -156,6 +156,12 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_CLOSE) {
+    // 主窗口点击叉叉时先在 Win32 层同步隐藏，再让 Dart
+    // 保存布局并决定驻留托盘或退出，避免异步通道导致关闭延迟。
+    ::ShowWindow(hwnd, SW_HIDE);
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

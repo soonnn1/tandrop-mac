@@ -40,6 +40,7 @@ const _sendCardChannel = WindowMethodChannel(
 const _sendCardNativeChannel = MethodChannel(
   'tandrop/windows_send_card_native',
 );
+const double _sendCardCornerRadius = 16;
 
 Brightness _brightnessFromSnapshot(
   Map<String, dynamic> snapshot,
@@ -460,12 +461,18 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
       // 必须先完成尺寸设置，再裁剪真实顶层 HWND。
       await windowManager.setAsFrameless();
       await windowManager.setHasShadow(false);
-      await _sendCardNativeChannel.invokeMethod<void>('setRoundedRegion', 34);
+      await _sendCardNativeChannel.invokeMethod<void>(
+        'setRoundedRegion',
+        _sendCardCornerRadius.round(),
+      );
       // 等待 Flutter 首帧，不能让原生窗口的默认白底先暴露出来。
       await Future<void>.delayed(const Duration(milliseconds: 120));
       await windowManager.show();
       // 显示后窗口 DPI/尺寸已稳定，再裁一次避免矩形外角。
-      await _sendCardNativeChannel.invokeMethod<void>('setRoundedRegion', 34);
+      await _sendCardNativeChannel.invokeMethod<void>(
+        'setRoundedRegion',
+        _sendCardCornerRadius.round(),
+      );
       await windowManager.focus();
     });
   }
@@ -581,7 +588,7 @@ class _WindowsSendCardWindowAppState extends State<_WindowsSendCardWindowApp>
         scaffoldBackgroundColor: colorScheme.surface,
       ),
       home: ClipRRect(
-        borderRadius: BorderRadius.circular(34),
+        borderRadius: BorderRadius.circular(_sendCardCornerRadius),
         clipBehavior: Clip.antiAlias,
         child: Material(
           color: colorScheme.surface,
@@ -661,7 +668,7 @@ class _SendCardPanel extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(34, 26, 34, 28),
       decoration: BoxDecoration(
         color: colors.surface,
-        borderRadius: BorderRadius.circular(34),
+        borderRadius: BorderRadius.circular(_sendCardCornerRadius),
         border: Border.all(color: colors.outlineVariant, width: 1.4),
       ),
       child: Column(
